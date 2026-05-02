@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import {
   boolean,
   check,
+  index,
   integer,
   jsonb,
   pgTable,
@@ -310,6 +311,90 @@ export const savedSearchesTable = pgTable("saved_searches", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 });
 
+// ─── Batch 6A: Communication Hub ─────────────────────────────────
+
+/**
+ * Email thread — a conversation thread linked to a candidate.
+ * nylas_thread_id populated once Nylas OAuth lands in 6A.1.
+ */
+export const emailThreadsTable = pgTable(
+  "email_threads",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+    workspaceId: uuid("workspace_id").references(() => workspacesTable.id).notNull(),
+    candidateId: uuid("candidate_id").references(() => candidatesTable.id),
+    subject: text("subject").notNull(),
+    lastMessageAt: timestamp("last_message_at", { withTimezone: true }),
+    messageCount: integer("message_count").default(0).notNull(),
+    nylasThreadId: text("nylas_thread_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (table) => [
+    index("email_threads_workspace_candidate_idx").on(table.workspaceId, table.candidateId),
+    index("email_threads_workspace_last_msg_idx").on(table.workspaceId, table.lastMessageAt),
+  ],
+);
+
+/**
+ * Individual email message within a thread.
+ * Partial unique index on nylas_message_id WHERE NOT NULL is applied via
+ * apply-rls.ts migration (Drizzle DSL cannot express partial unique indexes).
+ */
+export const emailMessagesTable = pgTable(
+  "email_messages",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+    workspaceId: uuid("workspace_id").references(() => workspacesTable.id).notNull(),
+    threadId: uuid("thread_id").references(() => emailThreadsTable.id).notNull(),
+    nylasMessageId: text("nylas_message_id"),
+    direction: text("direction").notNull(),
+    fromAddress: text("from_address").notNull(),
+    toAddresses: text("to_addresses").array().notNull().default(sql`'{}'::text[]`),
+    ccAddresses: text("cc_addresses").array().notNull().default(sql`'{}'::text[]`),
+    bccAddresses: text("bcc_addresses").array().notNull().default(sql`'{}'::text[]`),
+    subject: text("subject").notNull(),
+    bodyText: text("body_text").notNull(),
+    bodyHtml: text("body_html"),
+    messageId: text("message_id"),
+    inReplyTo: text("in_reply_to"),
+    sentAt: timestamp("sent_at", { withTimezone: true }).notNull(),
+    status: text("status").notNull().default("queued"),
+    bounceReason: text("bounce_reason"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (table) => [
+    index("email_messages_workspace_thread_sent_idx").on(table.workspaceId, table.threadId, table.sentAt),
+    check("email_messages_direction_check", sql`${table.direction} IN ('outbound','inbound')`),
+    check("email_messages_status_check", sql`${table.status} IN ('queued','sent','delivered','bounced','failed','received')`),
+  ],
+);
+
+/**
+ * Connected email account (Nylas grant) per workspace user.
+ * Unique per (workspace_id, user_id, email_address).
+ */
+export const connectedEmailAccountsTable = pgTable(
+  "connected_email_accounts",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+    workspaceId: uuid("workspace_id").references(() => workspacesTable.id).notNull(),
+    userId: uuid("user_id").references(() => usersTable.id).notNull(),
+    provider: text("provider").notNull(),
+    emailAddress: text("email_address").notNull(),
+    nylasGrantId: text("nylas_grant_id").notNull(),
+    connectedAt: timestamp("connected_at", { withTimezone: true }).defaultNow().notNull(),
+    lastSyncAt: timestamp("last_sync_at", { withTimezone: true }),
+    status: text("status").notNull().default("active"),
+  },
+  (table) => [
+    uniqueIndex("connected_email_accounts_workspace_user_email_uidx").on(
+      table.workspaceId, table.userId, table.emailAddress,
+    ),
+    check("connected_email_accounts_provider_check", sql`${table.provider} IN ('gmail','outlook','imap')`),
+    check("connected_email_accounts_status_check", sql`${table.status} IN ('active','revoked','error')`),
+  ],
+);
+
 // ─── Inferred types ───────────────────────────────────────────────
 export type Organization = typeof organizationsTable.$inferSelect;
 export type InsertOrganization = typeof organizationsTable.$inferInsert;
@@ -340,6 +425,12 @@ export type Task = typeof tasksTable.$inferSelect;
 export type InsertTask = typeof tasksTable.$inferInsert;
 export type Notification = typeof notificationsTable.$inferSelect;
 export type SavedSearch = typeof savedSearchesTable.$inferSelect;
+export type EmailThread = typeof emailThreadsTable.$inferSelect;
+export type InsertEmailThread = typeof emailThreadsTable.$inferInsert;
+export type EmailMessage = typeof emailMessagesTable.$inferSelect;
+export type InsertEmailMessage = typeof emailMessagesTable.$inferInsert;
+export type ConnectedEmailAccount = typeof connectedEmailAccountsTable.$inferSelect;
+export type InsertConnectedEmailAccount = typeof connectedEmailAccountsTable.$inferInsert;
 
 // Stage definition shape stored in jobs.stages_json
 export type StageDefinition = { key: string; label: string; order: number };

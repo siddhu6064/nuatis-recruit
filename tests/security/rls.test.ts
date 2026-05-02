@@ -32,6 +32,11 @@ let activityBId: string;
 let matchScoreBId: string;
 let fairnessLogBId: string;
 
+// Batch 6A IDs
+let emailThreadBId: string;
+let emailMessageBId: string;
+let connectedEmailAccountBId: string;
+
 beforeAll(async () => {
   await cleanTestData(PREFIX);
   tenantA = await createTestTenant(PREFIX, "a");
@@ -101,6 +106,34 @@ beforeAll(async () => {
       [tenantB.workspaceId, candidateBId],
     );
     fairnessLogBId = falRes.rows[0].id as string;
+
+    // email_thread (Batch 6A)
+    const etRes = await c.query(
+      `INSERT INTO email_threads (workspace_id, candidate_id, subject)
+       VALUES ($1, $2, $3) RETURNING id`,
+      [tenantB.workspaceId, candidateBId, `${PREFIX} thread`],
+    );
+    emailThreadBId = etRes.rows[0].id as string;
+
+    // email_message (Batch 6A)
+    const emRes = await c.query(
+      `INSERT INTO email_messages
+         (workspace_id, thread_id, direction, from_address, subject, body_text, sent_at, status)
+       VALUES ($1, $2, 'outbound', 'recruiter@test.invalid', $3, 'Hello', now(), 'sent')
+       RETURNING id`,
+      [tenantB.workspaceId, emailThreadBId, `${PREFIX} subject`],
+    );
+    emailMessageBId = emRes.rows[0].id as string;
+
+    // connected_email_account (Batch 6A)
+    const ceaRes = await c.query(
+      `INSERT INTO connected_email_accounts
+         (workspace_id, user_id, provider, email_address, nylas_grant_id)
+       VALUES ($1, $2, 'gmail', 'recruiter@test.invalid', 'stub-grant-id')
+       RETURNING id`,
+      [tenantB.workspaceId, tenantB.userId],
+    );
+    connectedEmailAccountBId = ceaRes.rows[0].id as string;
   } finally {
     c.release();
   }
@@ -110,6 +143,9 @@ afterAll(async () => {
   // Clean up in FK-safe order (Batch 3 first, then Batch 2)
   const c = await pool.connect();
   try {
+    if (emailMessageBId) await c.query(`DELETE FROM email_messages WHERE id = $1`, [emailMessageBId]);
+    if (emailThreadBId) await c.query(`DELETE FROM email_threads WHERE id = $1`, [emailThreadBId]);
+    if (connectedEmailAccountBId) await c.query(`DELETE FROM connected_email_accounts WHERE id = $1`, [connectedEmailAccountBId]);
     if (matchScoreBId) await c.query(`DELETE FROM match_scores WHERE id = $1`, [matchScoreBId]);
     if (fairnessLogBId) await c.query(`DELETE FROM fairness_audit_log WHERE id = $1`, [fairnessLogBId]);
     if (activityBId) await c.query(`DELETE FROM activities WHERE id = $1`, [activityBId]);
@@ -349,6 +385,86 @@ describe("RLS: cross-workspace isolation on `fairness_audit_log` table", () => {
       );
       const res = await client.query(
         "SELECT id FROM fairness_audit_log WHERE workspace_id = $1",
+        [tenantB.workspaceId],
+      );
+      await client.query("ROLLBACK");
+      expect(res.rows.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      client.release();
+    }
+  });
+});
+
+// ── Batch 6A tables ──────────────────────────────────────────────────────────
+
+describe("RLS: cross-workspace isolation on `email_threads` table", () => {
+  it("workspace A cannot read email_threads belonging to workspace B", async () => {
+    const count = await assertIsolated("email_threads", "id", emailThreadBId, tenantA.workspaceId);
+    expect(count).toBe(0);
+  });
+
+  it("workspace B can read its own email_threads when context is bound", async () => {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT set_config('app.current_workspace_id', $1, true)",
+        [tenantB.workspaceId],
+      );
+      const res = await client.query(
+        "SELECT id FROM email_threads WHERE workspace_id = $1",
+        [tenantB.workspaceId],
+      );
+      await client.query("ROLLBACK");
+      expect(res.rows.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      client.release();
+    }
+  });
+});
+
+describe("RLS: cross-workspace isolation on `email_messages` table", () => {
+  it("workspace A cannot read email_messages belonging to workspace B", async () => {
+    const count = await assertIsolated("email_messages", "id", emailMessageBId, tenantA.workspaceId);
+    expect(count).toBe(0);
+  });
+
+  it("workspace B can read its own email_messages when context is bound", async () => {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT set_config('app.current_workspace_id', $1, true)",
+        [tenantB.workspaceId],
+      );
+      const res = await client.query(
+        "SELECT id FROM email_messages WHERE workspace_id = $1",
+        [tenantB.workspaceId],
+      );
+      await client.query("ROLLBACK");
+      expect(res.rows.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      client.release();
+    }
+  });
+});
+
+describe("RLS: cross-workspace isolation on `connected_email_accounts` table", () => {
+  it("workspace A cannot read connected_email_accounts belonging to workspace B", async () => {
+    const count = await assertIsolated("connected_email_accounts", "id", connectedEmailAccountBId, tenantA.workspaceId);
+    expect(count).toBe(0);
+  });
+
+  it("workspace B can read its own connected_email_accounts when context is bound", async () => {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT set_config('app.current_workspace_id', $1, true)",
+        [tenantB.workspaceId],
+      );
+      const res = await client.query(
+        "SELECT id FROM connected_email_accounts WHERE workspace_id = $1",
         [tenantB.workspaceId],
       );
       await client.query("ROLLBACK");

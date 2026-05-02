@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { Link, useParams } from "wouter";
 import { Nav } from "@/components/nav";
+import { CommunicationsTab } from "@/components/communications-tab";
 import { NotesTab } from "@/components/notes-tab";
 import { TasksTab } from "@/components/tasks-tab";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -173,6 +174,16 @@ export default function CandidateDetail() {
     enabled: !!id,
   });
 
+  const { data: workspaceData } = useQuery<{ emailV1Enabled: boolean }>({
+    queryKey: ["/api/workspace"],
+    queryFn: async () => {
+      const res = await fetch("/api/workspace", { credentials: "include" });
+      if (!res.ok) throw new Error("Failed to fetch workspace");
+      return res.json();
+    },
+    enabled: isAuthenticated,
+  });
+
   const { data: appsData, isLoading: appsLoading } = useQuery<{ applications: Application[] }>({
     queryKey: ["/api/applications/candidate", id],
     queryFn: async () => {
@@ -325,9 +336,7 @@ export default function CandidateDetail() {
               </TabsContent>
 
               <TabsContent value="communications" className="mt-4">
-                <div className="p-6 text-center text-muted-foreground text-sm border rounded-lg">
-                  Email, SMS, and call recording coming in Phase 4.
-                </div>
+                <CommunicationsTab emailV1Enabled={workspaceData?.emailV1Enabled ?? false} />
               </TabsContent>
 
               <TabsContent value="notes" className="mt-4">

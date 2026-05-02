@@ -22,10 +22,12 @@ router.get("/workspace", async (req: Request, res: Response) => {
     return;
   }
 
+  const settings = (workspace.settingsJson ?? {}) as Record<string, unknown>;
   res.json({
     id: workspace.id,
     name: workspace.name,
     organizationId: workspace.organizationId,
+    emailV1Enabled: settings.email_v1_enabled === true,
   });
 });
 

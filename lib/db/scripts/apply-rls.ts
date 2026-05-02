@@ -144,6 +144,56 @@ CREATE TABLE IF NOT EXISTS saved_searches (
 );
 
 -- ─────────────────────────────────────────────────
+-- 1g. Batch 6A: Communication Hub tables
+-- ─────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS email_threads (
+  id               uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id     uuid        NOT NULL REFERENCES workspaces(id),
+  candidate_id     uuid        REFERENCES candidates(id),
+  subject          text        NOT NULL,
+  last_message_at  timestamptz,
+  message_count    int         NOT NULL DEFAULT 0,
+  nylas_thread_id  text,
+  created_at       timestamptz DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS email_messages (
+  id                uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id      uuid        NOT NULL REFERENCES workspaces(id),
+  thread_id         uuid        NOT NULL REFERENCES email_threads(id),
+  nylas_message_id  text,
+  direction         text        NOT NULL CHECK (direction IN ('outbound','inbound')),
+  from_address      text        NOT NULL,
+  to_addresses      text[]      NOT NULL DEFAULT '{}',
+  cc_addresses      text[]      NOT NULL DEFAULT '{}',
+  bcc_addresses     text[]      NOT NULL DEFAULT '{}',
+  subject           text        NOT NULL,
+  body_text         text        NOT NULL,
+  body_html         text,
+  message_id        text,
+  in_reply_to       text,
+  sent_at           timestamptz NOT NULL,
+  status            text        NOT NULL DEFAULT 'queued'
+                    CHECK (status IN ('queued','sent','delivered','bounced','failed','received')),
+  bounce_reason     text,
+  created_at        timestamptz DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS connected_email_accounts (
+  id              uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id    uuid        NOT NULL REFERENCES workspaces(id),
+  user_id         uuid        NOT NULL REFERENCES users(id),
+  provider        text        NOT NULL CHECK (provider IN ('gmail','outlook','imap')),
+  email_address   text        NOT NULL,
+  nylas_grant_id  text        NOT NULL,
+  connected_at    timestamptz NOT NULL DEFAULT now(),
+  last_sync_at    timestamptz,
+  status          text        NOT NULL DEFAULT 'active'
+                  CHECK (status IN ('active','revoked','error'))
+);
+
+-- ─────────────────────────────────────────────────
 -- 1f. candidates.search_vector — regular tsvector column updated by trigger.
 --     Using a trigger instead of GENERATED ALWAYS AS for compatibility.
 --     The trigger fires on INSERT/UPDATE of the relevant columns.
@@ -212,6 +262,9 @@ ALTER TABLE notes              ENABLE ROW LEVEL SECURITY;
 ALTER TABLE tasks              ENABLE ROW LEVEL SECURITY;
 ALTER TABLE notifications      ENABLE ROW LEVEL SECURITY;
 ALTER TABLE saved_searches     ENABLE ROW LEVEL SECURITY;
+ALTER TABLE email_threads            ENABLE ROW LEVEL SECURITY;
+ALTER TABLE email_messages           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE connected_email_accounts ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE workspaces         FORCE ROW LEVEL SECURITY;
 ALTER TABLE users              FORCE ROW LEVEL SECURITY;
@@ -231,6 +284,9 @@ ALTER TABLE notes              FORCE ROW LEVEL SECURITY;
 ALTER TABLE tasks              FORCE ROW LEVEL SECURITY;
 ALTER TABLE notifications      FORCE ROW LEVEL SECURITY;
 ALTER TABLE saved_searches     FORCE ROW LEVEL SECURITY;
+ALTER TABLE email_threads            FORCE ROW LEVEL SECURITY;
+ALTER TABLE email_messages           FORCE ROW LEVEL SECURITY;
+ALTER TABLE connected_email_accounts FORCE ROW LEVEL SECURITY;
 
 -- ─────────────────────────────────────────────────
 -- 3. Drop + recreate all workspace-isolation policies
@@ -254,6 +310,9 @@ DROP POLICY IF EXISTS tasks_workspace_isolation              ON tasks;
 DROP POLICY IF EXISTS notifications_workspace_isolation      ON notifications;
 DROP POLICY IF EXISTS notifications_insert                   ON notifications;
 DROP POLICY IF EXISTS saved_searches_workspace_isolation     ON saved_searches;
+DROP POLICY IF EXISTS email_threads_workspace_isolation            ON email_threads;
+DROP POLICY IF EXISTS email_messages_workspace_isolation           ON email_messages;
+DROP POLICY IF EXISTS connected_email_accounts_workspace_isolation ON connected_email_accounts;
 
 CREATE POLICY workspaces_workspace_isolation ON workspaces
   USING (NULLIF(current_setting('app.current_workspace_id', true), '') IS NULL
@@ -340,6 +399,19 @@ CREATE POLICY notifications_workspace_isolation ON notifications
   );
 
 CREATE POLICY saved_searches_workspace_isolation ON saved_searches
+  USING (NULLIF(current_setting('app.current_workspace_id', true), '') IS NULL
+         OR workspace_id::text = current_setting('app.current_workspace_id', true));
+
+-- Batch 6A: Communication Hub policies (standard workspace isolation)
+CREATE POLICY email_threads_workspace_isolation ON email_threads
+  USING (NULLIF(current_setting('app.current_workspace_id', true), '') IS NULL
+         OR workspace_id::text = current_setting('app.current_workspace_id', true));
+
+CREATE POLICY email_messages_workspace_isolation ON email_messages
+  USING (NULLIF(current_setting('app.current_workspace_id', true), '') IS NULL
+         OR workspace_id::text = current_setting('app.current_workspace_id', true));
+
+CREATE POLICY connected_email_accounts_workspace_isolation ON connected_email_accounts
   USING (NULLIF(current_setting('app.current_workspace_id', true), '') IS NULL
          OR workspace_id::text = current_setting('app.current_workspace_id', true));
 
@@ -512,10 +584,26 @@ END
 $$;
 
 -- Ensure nuatis_app has access to new tables (idempotent)
-GRANT SELECT, INSERT, UPDATE, DELETE ON notes           TO nuatis_app;
-GRANT SELECT, INSERT, UPDATE, DELETE ON tasks           TO nuatis_app;
-GRANT SELECT, INSERT, UPDATE, DELETE ON notifications   TO nuatis_app;
-GRANT SELECT, INSERT, UPDATE, DELETE ON saved_searches  TO nuatis_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON notes                     TO nuatis_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON tasks                     TO nuatis_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON notifications             TO nuatis_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON saved_searches            TO nuatis_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON email_threads             TO nuatis_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON email_messages            TO nuatis_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON connected_email_accounts  TO nuatis_app;
+
+-- Batch 6A indexes (idempotent)
+CREATE INDEX IF NOT EXISTS email_threads_workspace_candidate_idx
+  ON email_threads (workspace_id, candidate_id);
+CREATE INDEX IF NOT EXISTS email_threads_workspace_last_msg_idx
+  ON email_threads (workspace_id, last_message_at DESC);
+CREATE INDEX IF NOT EXISTS email_messages_workspace_thread_sent_idx
+  ON email_messages (workspace_id, thread_id, sent_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS email_messages_nylas_message_id_uidx
+  ON email_messages (nylas_message_id)
+  WHERE nylas_message_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS connected_email_accounts_workspace_user_email_uidx
+  ON connected_email_accounts (workspace_id, user_id, email_address);
 `;
 
 async function main() {
@@ -532,7 +620,8 @@ async function main() {
       'clients','jobs','candidates','applications','resumes','activities',
       'match_scores','fairness_audit_log',
       'rejection_reasons','stage_automations',
-      'notes','tasks','notifications','saved_searches'
+      'notes','tasks','notifications','saved_searches',
+      'email_threads','email_messages','connected_email_accounts'
     )
     ORDER BY relname
   `);
@@ -542,10 +631,13 @@ async function main() {
   const tables = await client.query(`
     SELECT table_name FROM information_schema.tables
     WHERE table_schema = 'public'
-      AND table_name IN ('notes','tasks','notifications','saved_searches')
+      AND table_name IN (
+        'notes','tasks','notifications','saved_searches',
+        'email_threads','email_messages','connected_email_accounts'
+      )
     ORDER BY table_name
   `);
-  console.log("Batch 5 tables:", tables.rows.map((r) => r.table_name).join(", "));
+  console.log("Batch 5+6A tables:", tables.rows.map((r) => r.table_name).join(", "));
 
   const cols = await client.query(`
     SELECT table_name, column_name FROM information_schema.columns

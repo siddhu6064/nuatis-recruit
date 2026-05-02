@@ -66,6 +66,10 @@ export async function cleanTestData(prefix: string) {
     );
     const wsIds = wsResult.rows.map((r: { id: string }) => r.id);
     if (wsIds.length) {
+      // Batch 6A: email tables (email_messages FK on email_threads, both FK on workspace)
+      await client.query(`DELETE FROM email_messages           WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);
+      await client.query(`DELETE FROM email_threads            WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);
+      await client.query(`DELETE FROM connected_email_accounts WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);
       // Batch 5: notifications + notes (FK on users/candidates) + tasks + saved_searches
       await client.query(`DELETE FROM notifications  WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);
       await client.query(`DELETE FROM notes          WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);
@@ -103,6 +107,7 @@ export async function cleanTestData(prefix: string) {
 export async function createTestTenant(
   prefix: string,
   suffix: string,
+  options?: { emailV1Enabled?: boolean },
 ): Promise<{ orgId: string; workspaceId: string; userId: string }> {
   const client = await pool.connect();
   try {
@@ -114,11 +119,15 @@ export async function createTestTenant(
     );
     const orgId: string = orgResult.rows[0].id;
 
+    const settingsJson = options?.emailV1Enabled
+      ? JSON.stringify({ email_v1_enabled: true })
+      : "{}";
+
     const wsResult = await client.query(
-      `INSERT INTO workspaces (organization_id, name)
-       VALUES ($1, $2)
+      `INSERT INTO workspaces (organization_id, name, settings_json)
+       VALUES ($1, $2, $3)
        RETURNING id`,
-      [orgId, `${prefix} Workspace ${suffix}`],
+      [orgId, `${prefix} Workspace ${suffix}`, settingsJson],
     );
     const workspaceId: string = wsResult.rows[0].id;
 
