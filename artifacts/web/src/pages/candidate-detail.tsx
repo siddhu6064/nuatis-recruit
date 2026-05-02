@@ -3,6 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect } from "react";
 import { Link, useParams } from "wouter";
 import { Nav } from "@/components/nav";
+import { NotesTab } from "@/components/notes-tab";
+import { TasksTab } from "@/components/tasks-tab";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -249,9 +251,9 @@ export default function CandidateDetail() {
               <TabsList>
                 <TabsTrigger value="profile">Profile</TabsTrigger>
                 <TabsTrigger value="applications">Applications</TabsTrigger>
-                <TabsTrigger value="activity">Activity</TabsTrigger>
-                <TabsTrigger value="communications">Communications</TabsTrigger>
                 <TabsTrigger value="notes">Notes</TabsTrigger>
+                <TabsTrigger value="tasks">Tasks</TabsTrigger>
+                <TabsTrigger value="activity">Activity</TabsTrigger>
                 <TabsTrigger value="documents">Documents</TabsTrigger>
               </TabsList>
 
@@ -329,14 +331,16 @@ export default function CandidateDetail() {
               </TabsContent>
 
               <TabsContent value="notes" className="mt-4">
-                <div className="p-6 text-center text-muted-foreground text-sm border rounded-lg">
-                  Notes and @mentions coming in Phase 5.
-                </div>
+                <NotesTab candidateId={id!} currentUserId={null} />
+              </TabsContent>
+
+              <TabsContent value="tasks" className="mt-4">
+                <TasksTab candidateId={id!} />
               </TabsContent>
 
               <TabsContent value="documents" className="mt-4">
                 <div className="p-6 text-center text-muted-foreground text-sm border rounded-lg">
-                  Document management coming in Phase 4.
+                  Document management coming in a future phase.
                 </div>
               </TabsContent>
             </Tabs>

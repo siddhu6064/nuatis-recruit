@@ -92,6 +92,106 @@ CREATE TABLE IF NOT EXISTS stage_automations (
 );
 
 -- ─────────────────────────────────────────────────
+-- 1e. Batch 5 schema additions (idempotent)
+-- ─────────────────────────────────────────────────
+
+-- notes table
+CREATE TABLE IF NOT EXISTS notes (
+  id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id        uuid NOT NULL REFERENCES workspaces(id),
+  candidate_id        uuid NOT NULL REFERENCES candidates(id),
+  author_id           uuid NOT NULL REFERENCES users(id),
+  body_html           text NOT NULL,
+  body_plain          text NOT NULL,
+  mentioned_user_ids  uuid[] DEFAULT '{}',
+  created_at          timestamptz DEFAULT now(),
+  updated_at          timestamptz DEFAULT now()
+);
+
+-- tasks table
+CREATE TABLE IF NOT EXISTS tasks (
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id  uuid NOT NULL REFERENCES workspaces(id),
+  candidate_id  uuid REFERENCES candidates(id),
+  assignee_id   uuid NOT NULL REFERENCES users(id),
+  created_by    uuid NOT NULL REFERENCES users(id),
+  title         text NOT NULL,
+  description   text,
+  due_at        timestamptz,
+  completed_at  timestamptz,
+  created_at    timestamptz DEFAULT now()
+);
+
+-- notifications table
+CREATE TABLE IF NOT EXISTS notifications (
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id  uuid NOT NULL REFERENCES workspaces(id),
+  recipient_id  uuid NOT NULL REFERENCES users(id),
+  type          text NOT NULL,
+  payload       jsonb DEFAULT '{}',
+  read_at       timestamptz,
+  created_at    timestamptz DEFAULT now()
+);
+
+-- saved_searches table
+CREATE TABLE IF NOT EXISTS saved_searches (
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id  uuid NOT NULL REFERENCES workspaces(id),
+  owner_id      uuid NOT NULL REFERENCES users(id),
+  name          text NOT NULL,
+  query_json    jsonb DEFAULT '{}',
+  created_at    timestamptz DEFAULT now()
+);
+
+-- ─────────────────────────────────────────────────
+-- 1f. candidates.search_vector — regular tsvector column updated by trigger.
+--     Using a trigger instead of GENERATED ALWAYS AS for compatibility.
+--     The trigger fires on INSERT/UPDATE of the relevant columns.
+-- ─────────────────────────────────────────────────
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'candidates' AND column_name = 'search_vector'
+  ) THEN
+    ALTER TABLE candidates ADD COLUMN search_vector tsvector;
+  END IF;
+END
+$$;
+
+-- Trigger function to recompute search_vector
+CREATE OR REPLACE FUNCTION _candidates_search_vector_update()
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+BEGIN
+  NEW.search_vector :=
+    setweight(to_tsvector('english', coalesce(NEW.name, '')), 'A') ||
+    setweight(to_tsvector('english', coalesce(NEW.current_title, '')), 'B') ||
+    setweight(to_tsvector('english', coalesce(NEW.current_company, '')), 'B') ||
+    setweight(to_tsvector('english', coalesce(NEW.summary, '')), 'C') ||
+    setweight(to_tsvector('english', coalesce(array_to_string(NEW.emails, ' '), '')), 'D');
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS candidates_search_vector_trig ON candidates;
+CREATE TRIGGER candidates_search_vector_trig
+  BEFORE INSERT OR UPDATE OF name, current_title, current_company, summary, emails
+  ON candidates FOR EACH ROW EXECUTE FUNCTION _candidates_search_vector_update();
+
+-- Back-fill existing rows (search_vector is NULL until first UPDATE)
+UPDATE candidates SET name = name WHERE search_vector IS NULL;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_indexes WHERE indexname = 'candidates_search_vector_gin_idx'
+  ) THEN
+    CREATE INDEX candidates_search_vector_gin_idx ON candidates USING gin(search_vector);
+  END IF;
+END
+$$;
+
+-- ─────────────────────────────────────────────────
 -- 2. Enable + Force RLS on all tenant-scoped tables
 -- ─────────────────────────────────────────────────
 ALTER TABLE workspaces         ENABLE ROW LEVEL SECURITY;
@@ -108,6 +208,10 @@ ALTER TABLE match_scores       ENABLE ROW LEVEL SECURITY;
 ALTER TABLE fairness_audit_log ENABLE ROW LEVEL SECURITY;
 ALTER TABLE rejection_reasons  ENABLE ROW LEVEL SECURITY;
 ALTER TABLE stage_automations  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE notes              ENABLE ROW LEVEL SECURITY;
+ALTER TABLE tasks              ENABLE ROW LEVEL SECURITY;
+ALTER TABLE notifications      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE saved_searches     ENABLE ROW LEVEL SECURITY;
 
 ALTER TABLE workspaces         FORCE ROW LEVEL SECURITY;
 ALTER TABLE users              FORCE ROW LEVEL SECURITY;
@@ -123,24 +227,33 @@ ALTER TABLE match_scores       FORCE ROW LEVEL SECURITY;
 ALTER TABLE fairness_audit_log FORCE ROW LEVEL SECURITY;
 ALTER TABLE rejection_reasons  FORCE ROW LEVEL SECURITY;
 ALTER TABLE stage_automations  FORCE ROW LEVEL SECURITY;
+ALTER TABLE notes              FORCE ROW LEVEL SECURITY;
+ALTER TABLE tasks              FORCE ROW LEVEL SECURITY;
+ALTER TABLE notifications      FORCE ROW LEVEL SECURITY;
+ALTER TABLE saved_searches     FORCE ROW LEVEL SECURITY;
 
 -- ─────────────────────────────────────────────────
 -- 3. Drop + recreate all workspace-isolation policies
 -- ─────────────────────────────────────────────────
-DROP POLICY IF EXISTS workspaces_workspace_isolation       ON workspaces;
-DROP POLICY IF EXISTS users_workspace_isolation            ON users;
-DROP POLICY IF EXISTS audit_logs_workspace_isolation       ON audit_logs;
-DROP POLICY IF EXISTS invites_workspace_isolation          ON invites;
-DROP POLICY IF EXISTS clients_workspace_isolation          ON clients;
-DROP POLICY IF EXISTS jobs_workspace_isolation             ON jobs;
-DROP POLICY IF EXISTS candidates_workspace_isolation       ON candidates;
-DROP POLICY IF EXISTS applications_workspace_isolation     ON applications;
-DROP POLICY IF EXISTS resumes_workspace_isolation          ON resumes;
-DROP POLICY IF EXISTS activities_workspace_isolation       ON activities;
-DROP POLICY IF EXISTS match_scores_workspace_isolation     ON match_scores;
+DROP POLICY IF EXISTS workspaces_workspace_isolation         ON workspaces;
+DROP POLICY IF EXISTS users_workspace_isolation              ON users;
+DROP POLICY IF EXISTS audit_logs_workspace_isolation         ON audit_logs;
+DROP POLICY IF EXISTS invites_workspace_isolation            ON invites;
+DROP POLICY IF EXISTS clients_workspace_isolation            ON clients;
+DROP POLICY IF EXISTS jobs_workspace_isolation               ON jobs;
+DROP POLICY IF EXISTS candidates_workspace_isolation         ON candidates;
+DROP POLICY IF EXISTS applications_workspace_isolation       ON applications;
+DROP POLICY IF EXISTS resumes_workspace_isolation            ON resumes;
+DROP POLICY IF EXISTS activities_workspace_isolation         ON activities;
+DROP POLICY IF EXISTS match_scores_workspace_isolation       ON match_scores;
 DROP POLICY IF EXISTS fairness_audit_log_workspace_isolation ON fairness_audit_log;
-DROP POLICY IF EXISTS rejection_reasons_workspace_isolation ON rejection_reasons;
-DROP POLICY IF EXISTS stage_automations_workspace_isolation ON stage_automations;
+DROP POLICY IF EXISTS rejection_reasons_workspace_isolation  ON rejection_reasons;
+DROP POLICY IF EXISTS stage_automations_workspace_isolation  ON stage_automations;
+DROP POLICY IF EXISTS notes_workspace_isolation              ON notes;
+DROP POLICY IF EXISTS tasks_workspace_isolation              ON tasks;
+DROP POLICY IF EXISTS notifications_workspace_isolation      ON notifications;
+DROP POLICY IF EXISTS notifications_insert                   ON notifications;
+DROP POLICY IF EXISTS saved_searches_workspace_isolation     ON saved_searches;
 
 CREATE POLICY workspaces_workspace_isolation ON workspaces
   USING (NULLIF(current_setting('app.current_workspace_id', true), '') IS NULL
@@ -195,6 +308,38 @@ CREATE POLICY rejection_reasons_workspace_isolation ON rejection_reasons
          OR workspace_id::text = current_setting('app.current_workspace_id', true));
 
 CREATE POLICY stage_automations_workspace_isolation ON stage_automations
+  USING (NULLIF(current_setting('app.current_workspace_id', true), '') IS NULL
+         OR workspace_id::text = current_setting('app.current_workspace_id', true));
+
+CREATE POLICY notes_workspace_isolation ON notes
+  USING (NULLIF(current_setting('app.current_workspace_id', true), '') IS NULL
+         OR workspace_id::text = current_setting('app.current_workspace_id', true));
+
+CREATE POLICY tasks_workspace_isolation ON tasks
+  USING (NULLIF(current_setting('app.current_workspace_id', true), '') IS NULL
+         OR workspace_id::text = current_setting('app.current_workspace_id', true));
+
+-- Notifications: split policies so server-side INSERT (for any recipient in
+-- the workspace) is not blocked by the recipient-scoped read policy.
+-- INSERT: workspace isolation only — the API inserts on behalf of any recipient.
+CREATE POLICY notifications_insert ON notifications
+  FOR INSERT
+  WITH CHECK (
+    NULLIF(current_setting('app.current_workspace_id', true), '') IS NULL
+    OR workspace_id::text = current_setting('app.current_workspace_id', true)
+  );
+-- SELECT/UPDATE/DELETE: workspace isolation + recipient scoping (own rows only).
+CREATE POLICY notifications_workspace_isolation ON notifications
+  FOR ALL
+  USING (
+    (NULLIF(current_setting('app.current_workspace_id', true), '') IS NULL
+     OR workspace_id::text = current_setting('app.current_workspace_id', true))
+    AND
+    (NULLIF(current_setting('app.current_user_id', true), '') IS NULL
+     OR recipient_id::text = current_setting('app.current_user_id', true))
+  );
+
+CREATE POLICY saved_searches_workspace_isolation ON saved_searches
   USING (NULLIF(current_setting('app.current_workspace_id', true), '') IS NULL
          OR workspace_id::text = current_setting('app.current_workspace_id', true));
 
@@ -255,10 +400,6 @@ CREATE TRIGGER user_audit_remove
 
 -- ─────────────────────────────────────────────────
 -- 5. NOTIFY trigger on applications
---    Fires on INSERT, UPDATE of (stage, position_in_stage), DELETE.
---    Payload JSON: {workspace_id, job_id, application_id, action}
---    SSE handler MUST verify workspace_id matches the authenticated user's
---    workspace before forwarding — cross-workspace leakage is a security bug.
 -- ─────────────────────────────────────────────────
 CREATE OR REPLACE FUNCTION _notify_application_change()
 RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
@@ -300,7 +441,6 @@ CREATE TRIGGER applications_notify_update
 
 -- ─────────────────────────────────────────────────
 -- 6. Rejection-reasons seeding trigger
---    Seeds 7 defaults into rejection_reasons when a workspace is created.
 -- ─────────────────────────────────────────────────
 CREATE OR REPLACE FUNCTION _seed_rejection_reasons()
 RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
@@ -320,7 +460,7 @@ DROP TRIGGER IF EXISTS workspace_seed_rejection_reasons ON workspaces;
 CREATE TRIGGER workspace_seed_rejection_reasons
   AFTER INSERT ON workspaces FOR EACH ROW EXECUTE FUNCTION _seed_rejection_reasons();
 
--- Back-fill rejection_reasons for existing workspaces that were created before this trigger
+-- Back-fill rejection_reasons for existing workspaces
 INSERT INTO rejection_reasons (workspace_id, label, sort_order, is_default)
 SELECT w.id, v.label, v.sort_order, true
 FROM workspaces w
@@ -370,11 +510,17 @@ BEGIN
   END IF;
 END
 $$;
+
+-- Ensure nuatis_app has access to new tables (idempotent)
+GRANT SELECT, INSERT, UPDATE, DELETE ON notes           TO nuatis_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON tasks           TO nuatis_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON notifications   TO nuatis_app;
+GRANT SELECT, INSERT, UPDATE, DELETE ON saved_searches  TO nuatis_app;
 `;
 
 async function main() {
   await client.connect();
-  console.log("Applying RLS policies, triggers, and Batch 4 schema additions...");
+  console.log("Applying RLS policies, triggers, and Batch 5 schema additions...");
   await client.query(SQL);
   console.log("Verifying...");
 
@@ -385,7 +531,8 @@ async function main() {
       'workspaces','users','audit_logs','invites',
       'clients','jobs','candidates','applications','resumes','activities',
       'match_scores','fairness_audit_log',
-      'rejection_reasons','stage_automations'
+      'rejection_reasons','stage_automations',
+      'notes','tasks','notifications','saved_searches'
     )
     ORDER BY relname
   `);
@@ -395,30 +542,22 @@ async function main() {
   const tables = await client.query(`
     SELECT table_name FROM information_schema.tables
     WHERE table_schema = 'public'
-      AND table_name IN ('rejection_reasons','stage_automations')
+      AND table_name IN ('notes','tasks','notifications','saved_searches')
     ORDER BY table_name
   `);
-  console.log("Batch 4 tables:", tables.rows.map((r) => r.table_name).join(", "));
+  console.log("Batch 5 tables:", tables.rows.map((r) => r.table_name).join(", "));
 
   const cols = await client.query(`
     SELECT table_name, column_name FROM information_schema.columns
-    WHERE table_name IN ('jobs','applications')
-      AND column_name IN ('stages_json','position_in_stage')
-    ORDER BY table_name, column_name
+    WHERE table_name = 'candidates' AND column_name = 'search_vector'
   `);
-  console.log("Batch 4 columns:", cols.rows.map((r) => `${r.table_name}.${r.column_name}`).join(", "));
+  console.log("search_vector column:", cols.rows.length > 0 ? "present" : "MISSING");
 
-  const triggers = await client.query(`
-    SELECT trigger_name, event_object_table
-    FROM information_schema.triggers
-    WHERE trigger_schema = 'public'
-      AND trigger_name IN ('applications_notify','applications_notify_update','workspace_seed_rejection_reasons')
-    ORDER BY trigger_name
+  const idx = await client.query(`
+    SELECT indexname FROM pg_indexes
+    WHERE indexname = 'candidates_search_vector_gin_idx'
   `);
-  console.log("Batch 4 triggers:", triggers.rows.map((r) => `${r.event_object_table}:${r.trigger_name}`).join(", "));
-
-  const rrCount = await client.query(`SELECT COUNT(*) FROM rejection_reasons`);
-  console.log(`rejection_reasons rows: ${rrCount.rows[0].count}`);
+  console.log("GIN index:", idx.rows.length > 0 ? "present" : "MISSING");
 
   await client.end();
   console.log("Done.");

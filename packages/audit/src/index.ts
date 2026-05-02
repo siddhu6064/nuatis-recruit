@@ -31,7 +31,15 @@ export type AuditAction =
   | "candidate.update"
   | "application.create"
   | "application.stage_change"
-  | "application.reject";
+  | "application.reject"
+  | "note.create"
+  | "note.update"
+  | "note.delete"
+  | "task.create"
+  | "task.complete"
+  | "task.update"
+  | "task.delete"
+  | "candidate.merged";
 
 export type AuditParams = {
   workspaceId: string;

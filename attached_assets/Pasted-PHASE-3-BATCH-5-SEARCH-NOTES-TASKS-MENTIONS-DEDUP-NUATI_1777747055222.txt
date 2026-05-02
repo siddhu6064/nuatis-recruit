@@ -1,0 +1,138 @@
+PHASE 3 · BATCH 5 — SEARCH + NOTES + TASKS + MENTIONS + DEDUP · NUATIS RECRUIT
+
+CONTEXT
+Batch 4 shipped a working kanban with optimistic drag-drop, real-time SSE updates across recruiter sessions, bulk operations, and a rejection flow with the default 7-reason taxonomy. 67/67 tests passing. The recruiter can now run a job pipeline visually. This batch adds the surfaces that turn a job-by-job tool into a full ATS: hybrid search across all candidates, per-candidate notes with @mentions, recruiter task management, and automatic duplicate detection. After this batch, Phase 3 is structurally complete and we move to Phase 4 (communications: email, SMS, voice).
+
+GOAL
+A recruiter can: search "senior python developer in Austin" across the workspace and get ranked results in <500ms; leave a note on a candidate, @mention a teammate, the teammate gets an in-app and email notification; create tasks with due dates that show up in their /tasks inbox; and have the system catch when a duplicate candidate is being created so they merge instead.
+
+SCOPE — BUILD / DO THIS
+
+1. Hybrid search infrastructure (packages/db migration):
+   - Add a generated tsvector column to candidates: search_vector tsvector GENERATED ALWAYS AS (
+       setweight(to_tsvector('english', coalesce(name, '')), 'A') ||
+       setweight(to_tsvector('english', coalesce(current_title, '')), 'B') ||
+       setweight(to_tsvector('english', coalesce(current_company, '')), 'B') ||
+       setweight(to_tsvector('english', coalesce(summary, '')), 'C') ||
+       setweight(to_tsvector('english', coalesce(array_to_string(emails, ' '), '')), 'D')
+     ) STORED.
+   - GIN index on candidates.search_vector.
+   - HNSW index on candidates.embedding already exists from Batch 3 — no change.
+   - Add notes table (id uuid pk, workspace_id uuid fk, candidate_id uuid fk, author_id uuid fk users, body_html text, body_plain text, mentioned_user_ids uuid[] default '{}', created_at, updated_at). RLS standard pattern.
+   - Add tasks table (id uuid pk, workspace_id uuid fk, candidate_id uuid fk NULL, assignee_id uuid fk users, created_by uuid fk users, title text, description text, due_at timestamptz, completed_at timestamptz NULL, created_at). RLS standard.
+   - Add notifications table (id uuid pk, workspace_id uuid fk, recipient_id uuid fk users, type text, payload jsonb, read_at timestamptz NULL, created_at). RLS standard, plus policy: WHERE recipient_id = current_setting('app.current_user_id') for read access (so users only see their own notifications). Add app.current_user_id to the existing SET LOCAL middleware.
+   - Add saved_searches table (id uuid pk, workspace_id uuid fk, owner_id uuid fk users, name text, query_json jsonb, created_at). RLS standard.
+
+2. Search API endpoint:
+   - GET /api/candidates/search?q=...&filters=... returns ranked candidate list.
+   - Hybrid scoring: full-text via ts_rank_cd on search_vector + semantic via cosine similarity on embedding (when query is long enough — say >3 words — and embeddings exist; for short queries skip the semantic leg). Combine with weighted rank: 0.6 * normalized_ts_rank + 0.4 * normalized_cosine_sim.
+   - Filters supported: stage (across applications), source, tags (deferred — schema doesn't have tags yet, leave a hook), date range on last_activity_at, last_contacted (NULL handling — never-contacted candidates are a valid filter).
+   - Cursor pagination, page size 25.
+   - Performance target: p95 <500ms on a workspace with 100K candidates. Synthetic-load test in tests/search/perf.test.ts that seeds 100K rows in a beforeAll and asserts the latency. If you can't seed 100K in test setup tractably, seed 10K and assert <100ms instead — document the substitution.
+   - Embed the search query via /embed at request time; cache embedded queries by hash for 1h in memory (Redis later).
+
+3. Search UI:
+   - Top-bar search input (existing component, extend it). Submit goes to /search?q=... with results page.
+   - /search page: query in URL, results list with each row showing name + current_title + match-score-against-most-recent-job (if any) + last activity. Clicking opens candidate detail.
+   - Filter sidebar: stage multi-select, source multi-select, date-range pickers.
+   - Save current search as a Segment: button "Save as segment" → name + persist to saved_searches.
+   - /candidates page lists workspace's saved segments in a left rail; clicking one runs that saved query.
+
+4. Notes with @mentions on /candidates/[id]:
+   - Notes tab on candidate detail page (currently a placeholder per Batch 2). Replace placeholder with Tiptap editor.
+   - Tiptap with: bold, italic, lists, code, mentions extension. Mention dropdown shows workspace users when user types @. On select, insert a mention node carrying user_id.
+   - On save, persist body_html (Tiptap JSON or sanitized HTML — your call, document) AND body_plain (stripped text for searching/notifications). Extract mentioned_user_ids from the mention nodes.
+   - Each note posts an activity row type='note.created' with payload = {note_id}.
+   - Notes display in a chronological feed under the editor: author avatar, name, timestamp, body, edit/delete icons (only for the author's own notes).
+
+5. @mention notifications:
+   - On note save, for each mentioned_user_id: INSERT notifications row type='note.mention' with payload = {note_id, candidate_id, author_id, snippet}.
+   - In-app notification bell in top nav: shows unread count badge, dropdown lists recent notifications, clicking marks read_at.
+   - Email notification via Postmark (or stub if Postmark isn't configured yet — log "[POSTMARK STUB] would send email to X"). Subject "{Author} mentioned you on {Candidate}". Body has snippet + link to candidate detail. Same TODO marker pattern as before.
+   - PostHog feature flag controls in-app vs email rollout per workspace (use a single flag 'mention-emails-enabled' defaulting true; document that PostHog isn't yet wired so the flag defaults are hardcoded for now).
+
+6. Tasks:
+   - On candidate detail: Tasks tab (replace placeholder). List of tasks for this candidate, sorted by due_at ASC, completed at the bottom. Inline new-task form: title, due_at, assignee (defaults to self).
+   - /tasks inbox page for the current user: groups by Today / This Week / Later / Overdue / Completed. Quick-complete checkbox.
+   - Overdue indicator in main nav: red dot on the Tasks icon when current user has any overdue uncompleted tasks.
+   - Each task creation/completion writes activities row + audit_logs row.
+
+7. Candidate deduplication:
+   - On POST /api/candidates and on POST /api/public/apply (find-or-create path): before insert, run dedup check.
+   - Dedup signals (any one matches → flag as duplicate):
+     a. Exact email match on emails array (case-insensitive).
+     b. Normalized phone match (strip non-digits, last 10 digits) on phones array.
+     c. Embedding cosine similarity > 0.92 against any existing candidate in the workspace (only if both candidates have embeddings — skip otherwise).
+   - For the public apply flow: silently merge into the existing candidate (current behavior — confirm it's still working).
+   - For recruiter-initiated POST /api/candidates: return 409 with the matched candidate(s) details. UI shows a "Possible duplicate detected" modal with side-by-side comparison + "Merge" / "Create anyway" buttons.
+   - Merge endpoint POST /api/candidates/:source_id/merge-into/:target_id: moves all applications, resumes, activities, notes, tasks from source to target, with field-level resolution UI (UI deferred — for now: target wins on conflict, document the choice). Audit logs candidate.merged with full diff.
+
+8. Tests:
+   - tests/search/hybrid-search.test.ts: seed 50 candidates, assert ranking is sensible (a candidate matching name + title outranks one matching only summary).
+   - tests/search/perf.test.ts: seed 10K (or 100K if tractable), assert p95 <100ms (or <500ms).
+   - tests/notes/mentions.test.ts: post a note with 2 mentions, assert notifications rows created, [POSTMARK STUB] log emitted.
+   - tests/tasks/inbox.test.ts: create tasks with various due dates, GET /api/tasks groups them correctly.
+   - tests/dedup/email-match.test.ts and dedup/phone-match.test.ts and dedup/embedding-match.test.ts: all three signals tested independently.
+   - tests/dedup/merge.test.ts: merge two candidates, assert all child rows moved + audit row written.
+   - All previous tests still pass (currently 67/67).
+
+SCOPE — DO NOT BUILD
+- Real Postmark email send (stub log only)
+- Tags on candidates (schema hook only, no UI, no tag CRUD)
+- Field-level merge resolution UI (target-wins for now, with audit row capturing what was discarded)
+- Real LLM prompts (still ML engineer)
+- Email composer / sequences / drip (Phase 4)
+- SMS / voice (Phase 4)
+- Real PostHog feature flag wiring (hardcoded defaults; PostHog SDK install is fine but no flags pulled yet)
+- Slack DM notifications (Phase 4)
+
+TECH CONSTRAINTS
+- Tiptap, not Slate, not ProseMirror raw.
+- Mentions stored as nodes with data-user-id attribute; mentioned_user_ids extracted server-side from the JSON, not from the client's payload (don't trust client-supplied user-id list — validate against the JSON tree).
+- search_vector is a GENERATED column — never written to directly.
+- Embedding cosine similarity uses pgvector's <=> operator (cosine distance, where 1 - distance = similarity); threshold 0.92 similarity = 0.08 distance.
+- The dedup embedding check only runs when BOTH candidates have non-null embeddings, with the partial HNSW index already in place from Batch 3.
+- /tasks inbox uses TanStack Query with 30s refetch on focus (no SSE for tasks — overkill).
+- The new app.current_user_id GUC must be set in the same SET LOCAL middleware as workspace_id, both inside the per-request transaction.
+
+ACCEPTANCE — REPORT FORMAT
+Same single block at the end:
+
+SUMMARY — 4 to 6 bullets
+ERRORS — every test failure, every non-zero exit, every TS error, verbatim
+ACCEPTANCE STATUS — items 1 through 8: PASS / FAIL / UNKNOWN with one-sentence reason. Include test count summary (e.g., "85/85 passing") and the search latency you measured.
+SKIPPED — anything deferred and why
+OPEN QUESTIONS — anything you need a human to decide
+
+REPORT WHAT YOU BUILT — STRUCTURED MANIFEST (REQUIRED, NEW SECTION)
+At the end of your report, ALSO include a structured manifest in this exact format, so the next session can pick up cleanly without re-reading the full conversation:
+
+  TABLES ADDED OR CHANGED:
+    - <table_name>: <one-line description>
+  COLUMNS ADDED:
+    - <table>.<column>: <type> — <purpose>
+  INDEXES ADDED:
+    - <index_name> ON <table>(<cols>) — <type, e.g. GIN/HNSW/btree>
+  RLS POLICIES ADDED:
+    - <policy_name> ON <table>
+  API ROUTES ADDED:
+    - METHOD /path — <one-line purpose>
+  UI ROUTES ADDED OR CHANGED:
+    - /path — <one-line description>
+  PACKAGES ADDED OR TOUCHED:
+    - <package_name> — <reason>
+  EXTERNAL DEPENDENCIES INSTALLED:
+    - <package@version> — <reason>
+  ENV VARS ADDED OR REQUIRED:
+    - <NAME> — <purpose, optional/required>
+  STUBS / TODOs LEFT FOR HUMAN:
+    - <file:line> — <what is stubbed and who owns the real implementation>
+  TEST FILES ADDED:
+    - <path> — <count of tests>
+  KNOWN WORKAROUNDS:
+    - <one-line description of any workaround that should be revisited>
+
+This manifest is non-negotiable — it replaces re-reading the entire conversation history when starting a new session.
+
+HARD STOP
+Stop after item 8, the report, AND the manifest. Do not begin Phase 4 (communications). Do not write real LLM prompts. Do not wire real Postmark / PostHog / Slack. Wait for next prompt.

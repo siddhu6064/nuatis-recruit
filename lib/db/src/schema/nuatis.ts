@@ -141,6 +141,7 @@ export const candidatesTable = pgTable("candidates", {
   summary: text("summary"),
   parsedResume: jsonb("parsed_resume"),
   // NOTE: embedding vector(1536) added via raw SQL in apply-rls migration.
+  // NOTE: search_vector tsvector GENERATED added via raw SQL (GENERATED not in Drizzle pg-core).
   source: text("source"),
   lastActivityAt: timestamp("last_activity_at", { withTimezone: true }),
   doNotContact: boolean("do_not_contact").default(false),
@@ -155,9 +156,6 @@ export const applicationsTable = pgTable(
     candidateId: uuid("candidate_id").references(() => candidatesTable.id).notNull(),
     jobId: uuid("job_id").references(() => jobsTable.id).notNull(),
     stage: text("stage").default("applied").notNull(),
-    // Batch 4: gap-based position within stage (multiples of 1000; rebalance when gap < 100).
-    // Stage validation is app-layer against jobs.stages_json keys — no DB check constraint,
-    // allowing custom stage keys without migrations.
     positionInStage: integer("position_in_stage").default(0).notNull(),
     source: text("source"),
     appliedAt: timestamp("applied_at", { withTimezone: true }).defaultNow(),
@@ -221,11 +219,6 @@ export const fairnessAuditLogTable = pgTable("fairness_audit_log", {
 
 // ─── Batch 4: Kanban support tables ──────────────────────────────
 
-/**
- * Per-workspace rejection reasons shown in the bulk-reject modal.
- * 7 default rows seeded by a DB trigger on workspace INSERT.
- * Column `sort_order` avoids the SQL reserved word `order`.
- */
 export const rejectionReasonsTable = pgTable("rejection_reasons", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   workspaceId: uuid("workspace_id").references(() => workspacesTable.id).notNull(),
@@ -235,17 +228,12 @@ export const rejectionReasonsTable = pgTable("rejection_reasons", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 });
 
-/**
- * Stage automation hooks — data model only; UI deferred to Phase 4.
- * job_id nullable = workspace-wide rule.
- * Inngest `stage.entered` handler is a stub (logs + writes activity).
- */
 export const stageAutomationsTable = pgTable(
   "stage_automations",
   {
     id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
     workspaceId: uuid("workspace_id").references(() => workspacesTable.id).notNull(),
-    jobId: uuid("job_id").references(() => jobsTable.id), // nullable = all jobs
+    jobId: uuid("job_id").references(() => jobsTable.id),
     stageKey: text("stage_key").notNull(),
     actionType: text("action_type").notNull(),
     actionPayload: jsonb("action_payload").default({}),
@@ -258,6 +246,69 @@ export const stageAutomationsTable = pgTable(
     ),
   ],
 );
+
+// ─── Batch 5: Search + Notes + Tasks + Notifications + Dedup ─────
+
+/**
+ * Notes on a candidate.
+ * body_html stores Tiptap JSON serialized as text (NOT raw HTML).
+ * Render with Tiptap's generateHTML() on the client.
+ * mentioned_user_ids is extracted server-side from the Tiptap JSON tree,
+ * never from the client payload.
+ */
+export const notesTable = pgTable("notes", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  workspaceId: uuid("workspace_id").references(() => workspacesTable.id).notNull(),
+  candidateId: uuid("candidate_id").references(() => candidatesTable.id).notNull(),
+  authorId: uuid("author_id").references(() => usersTable.id).notNull(),
+  bodyHtml: text("body_html").notNull(),
+  bodyPlain: text("body_plain").notNull(),
+  mentionedUserIds: uuid("mentioned_user_ids").array().default(sql`'{}'::uuid[]`),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+});
+
+/**
+ * Recruiter tasks (optionally linked to a candidate).
+ */
+export const tasksTable = pgTable("tasks", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  workspaceId: uuid("workspace_id").references(() => workspacesTable.id).notNull(),
+  candidateId: uuid("candidate_id").references(() => candidatesTable.id),
+  assigneeId: uuid("assignee_id").references(() => usersTable.id).notNull(),
+  createdBy: uuid("created_by").references(() => usersTable.id).notNull(),
+  title: text("title").notNull(),
+  description: text("description"),
+  dueAt: timestamp("due_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+});
+
+/**
+ * In-app notifications (e.g. @mention alerts).
+ * RLS policy: standard workspace isolation PLUS recipient_id = current_user_id.
+ */
+export const notificationsTable = pgTable("notifications", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  workspaceId: uuid("workspace_id").references(() => workspacesTable.id).notNull(),
+  recipientId: uuid("recipient_id").references(() => usersTable.id).notNull(),
+  type: text("type").notNull(),
+  payload: jsonb("payload").default({}),
+  readAt: timestamp("read_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+});
+
+/**
+ * Saved search segments shown in the /candidates left-rail.
+ */
+export const savedSearchesTable = pgTable("saved_searches", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  workspaceId: uuid("workspace_id").references(() => workspacesTable.id).notNull(),
+  ownerId: uuid("owner_id").references(() => usersTable.id).notNull(),
+  name: text("name").notNull(),
+  queryJson: jsonb("query_json").default({}),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+});
 
 // ─── Inferred types ───────────────────────────────────────────────
 export type Organization = typeof organizationsTable.$inferSelect;
@@ -283,6 +334,12 @@ export type InsertMatchScore = typeof matchScoresTable.$inferInsert;
 export type FairnessAuditLog = typeof fairnessAuditLogTable.$inferSelect;
 export type RejectionReason = typeof rejectionReasonsTable.$inferSelect;
 export type StageAutomation = typeof stageAutomationsTable.$inferSelect;
+export type Note = typeof notesTable.$inferSelect;
+export type InsertNote = typeof notesTable.$inferInsert;
+export type Task = typeof tasksTable.$inferSelect;
+export type InsertTask = typeof tasksTable.$inferInsert;
+export type Notification = typeof notificationsTable.$inferSelect;
+export type SavedSearch = typeof savedSearchesTable.$inferSelect;
 
 // Stage definition shape stored in jobs.stages_json
 export type StageDefinition = { key: string; label: string; order: number };

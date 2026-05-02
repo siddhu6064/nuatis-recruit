@@ -1,22 +1,10 @@
 /**
- * RLS middleware — sets the PostgreSQL session variable app.current_workspace_id
- * for authenticated requests so that the workspace isolation RLS policies
- * filter data to the caller's workspace automatically.
+ * RLS middleware — sets PostgreSQL session variables for authenticated requests:
+ *   app.current_workspace_id — workspace isolation for all tenant tables
+ *   app.current_user_id      — user scoping for notifications table
  *
- * Implementation:
- *  1. Acquires a pg PoolClient for the lifetime of the request.
- *  2. Opens a transaction (BEGIN).
- *  3. Uses a parameterized SET LOCAL so the value never touches string
- *     interpolation (SQL injection safe via pg's $1 protocol).
- *  4. Attaches a Drizzle instance over that specific client as req.db
- *     so route handlers issue queries inside the same transaction/context.
- *  5. Commits on response finish; rolls back on connection close before commit.
- *
- * Non-RLS escape hatch (TODO — do not add yet):
- *  Routes that legitimately need cross-workspace reads (e.g. global admin,
- *  super-tenant billing) should use a separate Pool created with a DB user
- *  that has the BYPASSRLS privilege. Import it as `adminDb` from a dedicated
- *  module — never use the shared `db` pool for such queries.
+ * Both GUCs are set via parameterized SET LOCAL inside BEGIN/COMMIT, so values
+ * are never string-interpolated into SQL (SQL injection safe).
  */
 import type { Request, Response, NextFunction } from "express";
 import { drizzle } from "drizzle-orm/node-postgres";
@@ -44,21 +32,22 @@ export async function rlsMiddleware(
   }
 
   const workspaceId = req.user.workspaceId;
+  const userId = req.user.id;
   const client = await pool.connect();
   let committed = false;
 
   try {
     await client.query("BEGIN");
 
-    // Parameterized — workspaceId value is sent as a protocol parameter,
-    // never interpolated into the SQL string.
     await client.query(
       "SELECT set_config('app.current_workspace_id', $1, true)",
       [workspaceId],
     );
+    await client.query(
+      "SELECT set_config('app.current_user_id', $1, true)",
+      [userId],
+    );
 
-    // Attach a Drizzle instance that routes through this specific client
-    // (and thus through the same transaction + RLS context).
     req.db = drizzle(client as unknown as Pool, { schema });
 
     const commit = async () => {

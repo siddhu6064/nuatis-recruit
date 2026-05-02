@@ -14,6 +14,8 @@ import Jobs from "@/pages/jobs";
 import JobDetail from "@/pages/job-detail";
 import Candidates from "@/pages/candidates";
 import CandidateDetail from "@/pages/candidate-detail";
+import Search from "@/pages/search";
+import Tasks from "@/pages/tasks";
 
 const queryClient = new QueryClient();
 
@@ -52,6 +54,8 @@ function Router() {
       <Route path="/jobs/:id" component={JobDetail} />
       <Route path="/candidates" component={Candidates} />
       <Route path="/candidates/:id" component={CandidateDetail} />
+      <Route path="/search" component={Search} />
+      <Route path="/tasks" component={Tasks} />
       <Route path="/settings/members" component={SettingsMembers} />
       <Route path="/accept-invite" component={AcceptInvite} />
       <Route component={NotFound} />

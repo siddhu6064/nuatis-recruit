@@ -66,6 +66,11 @@ export async function cleanTestData(prefix: string) {
     );
     const wsIds = wsResult.rows.map((r: { id: string }) => r.id);
     if (wsIds.length) {
+      // Batch 5: notifications + notes (FK on users/candidates) + tasks + saved_searches
+      await client.query(`DELETE FROM notifications  WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);
+      await client.query(`DELETE FROM notes          WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);
+      await client.query(`DELETE FROM tasks          WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);
+      await client.query(`DELETE FROM saved_searches WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);
       // Batch 4: delete kanban support tables first
       await client.query(`DELETE FROM stage_automations WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);
       await client.query(`DELETE FROM rejection_reasons  WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);

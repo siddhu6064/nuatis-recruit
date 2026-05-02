@@ -9,6 +9,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useQuery } from "@tanstack/react-query";
+import { NotificationBell } from "@/components/notification-bell";
 
 function useWorkspace() {
   return useQuery({
@@ -32,6 +33,8 @@ const NAV_LINKS = [
   { href: "/clients", label: "Clients" },
   { href: "/jobs", label: "Jobs" },
   { href: "/candidates", label: "Candidates" },
+  { href: "/search", label: "Search" },
+  { href: "/tasks", label: "Tasks" },
 ];
 
 export function Nav() {
@@ -56,6 +59,8 @@ export function Nav() {
           </Link>
         ))}
       </nav>
+
+      {user && <NotificationBell />}
 
       {user && (
         <DropdownMenu>

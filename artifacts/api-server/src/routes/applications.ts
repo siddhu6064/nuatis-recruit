@@ -1,6 +1,6 @@
 import { Router, type IRouter, type Request, type Response } from "express";
 import { db, applicationsTable, candidatesTable, jobsTable, activitiesTable } from "@workspace/db";
-import { eq, and, inArray } from "drizzle-orm";
+import { eq, and, inArray, sql } from "drizzle-orm";
 import { requireAuth } from "@workspace/auth";
 import { withAudit } from "@workspace/audit";
 import { logger } from "../lib/logger";
@@ -83,7 +83,7 @@ async function maybeRebalance(
 router.get("/applications", async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  const txDb = req.db ?? db;
+  const txDb = (req.db ?? db) as typeof db;
 
   const conditions = [eq(applicationsTable.workspaceId, user.workspaceId)];
   if (req.query.job_id) conditions.push(eq(applicationsTable.jobId, String(req.query.job_id)));
@@ -115,7 +115,7 @@ router.get("/applications", async (req: Request, res: Response) => {
   if (appIds.length > 0) {
     // Raw query: DISTINCT ON to get latest stage_change per application_id from payload
     const raw = await (req.db ?? db).execute(
-      drizzleSql`
+      sql`
         SELECT DISTINCT ON ((payload->>'application_id'))
           payload->>'application_id' AS application_id,
           created_at
@@ -148,7 +148,7 @@ router.get("/applications", async (req: Request, res: Response) => {
 router.post("/applications/:id/move", async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  const txDb = req.db ?? db;
+  const txDb = (req.db ?? db) as typeof db;
   const appId = String(req.params.id);
 
   const { stage: newStage, positionInStage } = req.body as {
@@ -281,7 +281,7 @@ router.post("/applications/:id/move", async (req: Request, res: Response) => {
 router.post("/applications/bulk-move", async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  const txDb = req.db ?? db;
+  const txDb = (req.db ?? db) as typeof db;
 
   const { applicationIds, stage: newStage } = req.body as {
     applicationIds: string[];
@@ -386,7 +386,7 @@ router.post("/applications/bulk-move", async (req: Request, res: Response) => {
 router.post("/applications/bulk-reject", async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
-  const txDb = req.db ?? db;
+  const txDb = (req.db ?? db) as typeof db;
 
   const { applicationIds, rejectionReasonId, sendTemplateEmail } = req.body as {
     applicationIds: string[];
