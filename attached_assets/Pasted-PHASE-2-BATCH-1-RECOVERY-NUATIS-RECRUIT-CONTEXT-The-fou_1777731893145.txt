@@ -1,0 +1,65 @@
+PHASE 2 · BATCH 1 RECOVERY · NUATIS RECRUIT
+
+CONTEXT
+The foundation scaffold shipped most files but you crashed before producing the HARD STOP report. Express API and Next.js web app are running and serving auth redirects to Replit OIDC. Python AI service status, GitHub push state, RLS cross-workspace isolation, audit log writes, and the invite flow are all unverified. Do not begin new feature work — close out Batch 1 first.
+
+GOAL
+Prove the walking skeleton works end-to-end and produce a real HARD STOP report.
+
+SCOPE — BUILD / DO THIS
+1. Confirm FastAPI Python AI service in apps/ai is running. GET /health returns 200 with a timestamp field. GET /docs renders the OpenAPI spec. Report the port and the raw response body.
+
+2. Create tests/security/rls.test.ts — integration test using Vitest:
+   - Create workspace A and workspace B with one user each via the real signup path
+   - As user A (with app.current_workspace_id bound to workspace A), attempt SELECT * FROM users WHERE workspace_id = '<workspace B id>'
+   - Assert the result is an empty array
+   - Repeat for at least one other tenant-scoped table (audit_logs)
+   Run the test and report PASS / FAIL with output.
+
+3. Create tests/audit/audit-log.test.ts — verifies an audit_logs row is written with correct diff_json on:
+   - workspace creation
+   - user invite
+   - role change
+   - user deactivation
+   Run it and report PASS / FAIL with output.
+
+4. Smoke-test the invite flow programmatically (no browser):
+   - Create workspace, invite a second email
+   - Simulate the invite-token acceptance endpoint
+   - Assert the second user joins with the assigned role
+   Report PASS / FAIL with output.
+
+5. Verify GitHub remote sync:
+   - Run `git remote -v` — paste output
+   - Run `git log --oneline -10` — paste output
+   - Run `git status` — paste output
+   - If local is ahead of origin/main (or origin/develop), push it. If origin is unset or wrong, report and stop — do not guess the URL.
+
+6. Run this grep verbatim and paste the result:
+   grep -rE "@replit/(repl-auth|auth)|passport-replit|REPLIT_OIDC|replitAuth" --include="*.ts" --include="*.tsx" apps packages lib 2>/dev/null | grep -v "packages/auth/"
+   The result MUST be empty. If anything comes back, list every violating file and line, and propose a fix per file. Do not apply the fix yet — just propose.
+
+SCOPE — DO NOT BUILD
+- No Batch 2 features (candidates, clients, jobs, applications, public job page, apply form)
+- No new Drizzle tables or schema changes
+- No UI polish, refactoring, or "improvements" outside the items above
+- Do not refactor the Express-vs-tRPC architecture decision
+- Do not add new dependencies beyond Vitest + supertest if not already present
+
+TECH CONSTRAINTS
+- Vitest for tests (not Jest)
+- Tests live under tests/ at repo root or apps/web/tests/ — your call, but document the choice in the report
+- Use the real DB and real auth code paths, not mocks, for items 2–4
+- For RLS test, use SET LOCAL app.current_workspace_id within a transaction so isolation is genuinely tested
+
+ACCEPTANCE — REPORT FORMAT (do not skip)
+Produce a single block at the end with these sections:
+
+SUMMARY — 3 to 5 bullets of what you did
+ERRORS — every test failure with stack trace, every command that returned non-zero, every TypeScript error
+ACCEPTANCE STATUS — for each of items 1 through 6: PASS / FAIL / UNKNOWN with one-sentence reason
+SKIPPED — anything you deferred, with why
+OPEN QUESTIONS — anything you want a human to decide before continuing
+
+HARD STOP
+Stop after item 6 and the report. Do not begin Batch 2. Do not start anything I did not list. Wait for the next prompt.
