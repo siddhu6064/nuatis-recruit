@@ -39,7 +39,9 @@ export type AuditAction =
   | "task.complete"
   | "task.update"
   | "task.delete"
-  | "candidate.merged";
+  | "candidate.merged"
+  | "email.sent"
+  | "email.bounced";
 
 export type AuditParams = {
   workspaceId: string;

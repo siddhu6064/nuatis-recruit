@@ -290,4 +290,127 @@ export const stageEnteredJob = inngest.createFunction(
   },
 );
 
-export const functions = [parseResumeJob, parseJobJob, scoreApplicationJob, stageEnteredJob];
+// ── Event type: email.mention ──────────────────────────────────────────────
+
+type EmailMentionEvent = {
+  name: "email.mention";
+  data: {
+    notificationId: string;
+    mentionerUserId: string;
+    recipientUserId: string;
+    candidateId: string;
+    noteId: string;
+    workspaceId: string;
+    candidateName: string;
+    mentionerName: string;
+    recipientEmail: string;
+    recipientName: string;
+  };
+};
+
+// ── Function: email.mention ────────────────────────────────────────────────
+// Sends a Postmark transactional email to a workspace user who was @-mentioned
+// in a candidate note. Idempotent on notificationId.
+
+export const sendSystemMentionEmailJob = inngest.createFunction(
+  {
+    id: "send-system-mention-email",
+    name: "Send system @mention notification email",
+    retries: 3,
+    triggers: [{ event: "email.mention" }],
+    idempotency: "event.data.notificationId",
+  },
+  async ({ event, step }) => {
+    const {
+      notificationId,
+      workspaceId,
+      candidateId,
+      noteId,
+      candidateName,
+      mentionerName,
+      recipientEmail,
+      recipientName,
+    } = (event as unknown as EmailMentionEvent).data;
+
+    if (!recipientEmail) {
+      logger.warn({ notificationId }, "email.mention: recipientEmail is empty — skipping send");
+      return { notificationId, skipped: true, reason: "no recipient email" };
+    }
+
+    const result = await step.run("send-postmark-email", async () => {
+      const { sendTransactional } = await import("./email/postmark");
+      const { renderMentionEmail } = await import("./email/templates/mention");
+
+      const appBaseUrl =
+        process.env.APP_BASE_URL ??
+        `https://${(process.env.REPLIT_DOMAINS ?? "localhost").split(",")[0]}`;
+
+      const template = renderMentionEmail({
+        mentionerName,
+        candidateName,
+        candidateId,
+        noteId,
+        snippet: "",
+        appBaseUrl,
+      });
+
+      return sendTransactional({
+        to: recipientEmail,
+        subject: template.subject,
+        html: template.html,
+        text: template.text,
+        tag: "system-mention",
+        metadata: { workspaceId, noteId, candidateId, notificationId },
+      });
+    });
+
+    await step.run("write-email-message-row", async () => {
+      const fromAddress = process.env.POSTMARK_FROM_ADDRESS ?? "";
+      const now = new Date().toISOString();
+
+      await dbQuery(
+        `INSERT INTO email_messages
+           (workspace_id, thread_id, postmark_message_id, direction, from_address,
+            to_addresses, subject, body_text, sent_at, status)
+         VALUES ($1, NULL, $2, 'outbound', $3, ARRAY[$4]::text[], $5, $6, $7, 'sent')`,
+        [
+          workspaceId,
+          result.postmarkMessageId,
+          fromAddress,
+          recipientEmail,
+          `${mentionerName} mentioned you in a note on ${candidateName}`,
+          `${mentionerName} mentioned you in a note on candidate ${candidateName}.`,
+          now,
+        ],
+      );
+
+      logger.info(
+        { notificationId, postmarkMessageId: result.postmarkMessageId, recipientEmail },
+        "System mention email sent and email_messages row written",
+      );
+    });
+
+    await step.run("write-audit-log", async () => {
+      await dbQuery(
+        `INSERT INTO audit_logs (workspace_id, action, target_type, diff_json)
+         VALUES ($1, 'email.sent', 'email_message', $2)`,
+        [
+          workspaceId,
+          JSON.stringify({
+            notificationId,
+            postmarkMessageId: result.postmarkMessageId,
+            recipientEmail,
+          }),
+        ],
+      );
+    });
+
+    return {
+      notificationId,
+      postmarkMessageId: result.postmarkMessageId,
+      recipientEmail,
+    };
+  },
+);
+
+export const functions = [parseResumeJob, parseJobJob, scoreApplicationJob, stageEnteredJob, sendSystemMentionEmailJob];

@@ -11,6 +11,7 @@
  * On note save, notifications are inserted for each mentioned user.
  * Postmark email is stubbed: logs "[POSTMARK STUB] would send email to X".
  */
+import { randomUUID } from "crypto";
 import { Router, type IRouter, type Request, type Response } from "express";
 import {
   db,
@@ -24,6 +25,7 @@ import { eq, and } from "drizzle-orm";
 import { requireAuth } from "@workspace/auth";
 import { withAudit } from "@workspace/audit";
 import { logger } from "../lib/logger";
+import { inngest } from "../lib/inngest";
 
 const router: IRouter = Router();
 
@@ -178,8 +180,17 @@ router.post("/candidates/:candidateId/notes", async (req: Request, res: Response
     const mentionedSet = new Set(mentionedUserIds);
     const toNotify = mentionedUsers.filter((u) => mentionedSet.has(u.id) && u.id !== user.id);
 
+    const mentionerName =
+      [user.firstName, user.lastName].filter(Boolean).join(" ") ||
+      user.email ||
+      "Someone";
+
     for (const recipient of toNotify) {
+      // Generate UUID client-side to avoid RETURNING filtered by recipient-scoped RLS SELECT policy
+      const notifId = randomUUID() as `${string}-${string}-${string}-${string}-${string}`;
+
       await txDb.insert(notificationsTable).values({
+        id: notifId,
         workspaceId: user.workspaceId,
         recipientId: recipient.id,
         type: "note.mention",
@@ -191,11 +202,25 @@ router.post("/candidates/:candidateId/notes", async (req: Request, res: Response
         },
       });
 
-      // TODO(postmark): Replace stub with real Postmark send
-      logger.info(
-        `[POSTMARK STUB] would send email to ${recipient.email}: ` +
-          `"${user.email ?? "Someone"} mentioned you on ${candidate.name}" — snippet: ${bodyPlain.slice(0, 100)}`,
-      );
+      try {
+        await inngest.send({
+          name: "email.mention",
+          data: {
+            notificationId: notifId,
+            mentionerUserId: user.id,
+            recipientUserId: recipient.id,
+            candidateId,
+            noteId: note.id,
+            workspaceId: user.workspaceId,
+            candidateName: candidate.name,
+            mentionerName,
+            recipientEmail: recipient.email ?? "",
+            recipientName: recipient.name ?? recipient.email ?? "Teammate",
+          },
+        });
+      } catch (err) {
+        logger.warn({ err, recipientId: recipient.id }, "Failed to fire email.mention Inngest event — notification still written");
+      }
     }
   }
 

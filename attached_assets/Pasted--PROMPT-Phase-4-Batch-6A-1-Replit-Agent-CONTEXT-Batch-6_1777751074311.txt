@@ -1,0 +1,121 @@
+▶ PROMPT [Phase 4 · Batch 6A.1 · Replit Agent]
+
+CONTEXT
+Batch 6A.0 landed email schema (email_threads, email_messages,
+connected_email_accounts) under RLS, with empty-state Communications tab.
+126/126 tests passing. Project structure is lib/* and artifacts/* — no
+packages/ or apps/ directories. Use the actual paths.
+
+This batch is Postmark-only — system transactional mail (server-initiated
+sends to workspace users, not to candidates). It closes the @mention
+email gap from Batch 5, where notifications were in-app only. Nylas (user
+mailbox connect, inbound sync, recruiter→candidate mail) is 6A.2.
+
+GOAL
+A user @-mentioned in a candidate note receives a Postmark email within
+60s; email_messages row written with status='sent'; bounce webhook flips
+status to 'bounced' on HardBounce.
+
+SCOPE — BUILD THIS
+
+1. Env var precheck. If POSTMARK_SERVER_TOKEN or POSTMARK_FROM_ADDRESS
+   missing, fail fast on first email-related route or at server boot —
+   clear error, no silent degradation.
+
+2. Install postmark npm package (latest 4.x). Client wrapper at
+   lib/email/postmark.ts exposing sendTransactional({to, subject, html,
+   text, tag, metadata}). Every send must include a Postmark tag.
+
+3. Internal POST /api/email/send-system route. Server-side only — reject
+   external client calls (use whatever internal-auth pattern already
+   exists in the codebase, or shared-secret header; do NOT invent a new
+   pattern). Accepts {recipientUserId, type, payload}. Renders template,
+   sends via Postmark, writes one email_messages row (direction=
+   'outbound', status='sent', message_id_external=Postmark MessageID,
+   from_address, to_addresses, subject, body_text, body_html, sent_at).
+   Writes one audit_logs row action='email.sent'.
+
+4. Inngest function email.send-system-mention. Idempotent on
+   notification_id (use Inngest idempotency key). Triggered by event
+   fired from the existing Batch 5 notification fan-out path immediately
+   after the in-app notifications row is written.
+
+5. Wire fan-out: locate the @mention notification insert path from Batch
+   5 → after successful insert, fire inngest.send('email.mention',
+   {notificationId, mentionerUserId, recipientUserId, candidateId,
+   noteId}).
+
+6. @mention email template (lib/email/templates/mention.ts). Subject:
+   "{mentioner} mentioned you in a note on {candidateName}". Body:
+   plaintext + minimal HTML, with deep link to the candidate detail page
+   anchored to the note. No design polish.
+
+7. Bounce/complaint webhook at POST /api/webhooks/postmark. HTTP Basic
+   auth via POSTMARK_WEBHOOK_USERNAME + POSTMARK_WEBHOOK_PASSWORD; 401
+   on bad creds. On HardBounce or SpamComplaint payloads, look up
+   email_messages by message_id_external, set status='bounced',
+   bounce_reason=<from payload>. Write audit_logs action='email.bounced'.
+
+8. Tests (extend existing suites — no component tests, that infra
+   doesn't exist):
+   • env precheck fails clearly when secrets missing
+   • Postmark client send called with correct args (mock HTTP)
+   • Webhook 401 on bad Basic auth, 200 on good
+   • Webhook flips status to 'bounced' on HardBounce payload
+   • E2E: insert note with @mention → notification row → Inngest fires
+     → email_messages row written status='sent' (mock outbound HTTP)
+   • RLS: cross-workspace cannot read the new email_messages row
+   Expect 126 → ~133.
+
+SCOPE — DO NOT BUILD
+
+- No Nylas anything — no install, no routes, no UI. 6A.2.
+- No /settings/email page.
+- No public composer-driven /api/email/send route.
+- No template library, no per-workspace customization.
+- No tracking pixels, no URL rewriting.
+- No schedule-send.
+- No reply detection.
+- No Communications tab population — system mail isn't candidate
+  conversation, leave the empty state alone.
+- No candidate-level bounce flagging — system mail recipients are
+  workspace users, not candidates. That belongs in 6A.2.
+
+TECH CONSTRAINTS
+
+- Paths: lib/* and artifacts/* — match Batch 6A.0's actual structure.
+- RLS unchanged. Replit Auth abstraction stays clean.
+- Inngest function registration follows the same pattern as
+  resume.uploaded / job.created / application.created.
+- Postmark MessageID from the send response MUST persist to
+  email_messages (column already exists from 6A.0 — verify before
+  adding; if missing, add via migration 0007).
+- ML-engineering territory: nothing here is ML. The mention template is
+  static.
+
+ACCEPTANCE
+
+- pnpm test green at ~133.
+- grep '@nylas\\|nylas-' across codebase returns zero hits.
+- grep '@replit/repl-auth\\|@replit/auth\\|passport-replit' outside
+  lib/auth/ returns zero hits.
+- Manual smoke before reporting done: with two real workspace users
+  seeded, create a note with @other-user; within 60s the controlled
+  inbox receives the email; email_messages has the row; audit_logs has
+  the entry.
+
+REPORT WHAT YOU BUILT
+
+- Files touched (paths only).
+- Test count delta.
+- Every new env var introduced.
+- Schema additions if any (ideally none — message_id_external should
+  already exist from 6A.0).
+- Postmark verification state — domain verified or sender-signature?
+- Deviations from this prompt — flag them.
+- Open questions.
+
+HARD STOP
+
+Stop after scope. Do not start Nylas. Do not propose 6A.2. Do not offer
+"also wire the composer / templates / tracking." Wait for next prompt.

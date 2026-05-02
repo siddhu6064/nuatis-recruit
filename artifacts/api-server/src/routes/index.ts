@@ -15,6 +15,8 @@ import tasksRouter from "./tasks";
 import notificationsRouter from "./notifications";
 import searchRouter from "./search";
 import savedSearchesRouter from "./saved-searches";
+import emailRouter from "./email";
+import postmarkWebhookRouter from "./webhooks/postmark";
 import { inngestHandler } from "./inngest-serve";
 import { inngest } from "../lib/inngest";
 import { db, usersTable } from "@workspace/db";
@@ -44,6 +46,8 @@ router.use(sseRouter);
 router.use(notesRouter);
 router.use(tasksRouter);
 router.use(notificationsRouter);
+router.use(emailRouter);
+router.use(postmarkWebhookRouter);
 
 // Inngest serve endpoint
 router.use("/inngest", inngestHandler);

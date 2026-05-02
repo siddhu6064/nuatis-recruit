@@ -345,8 +345,9 @@ export const emailMessagesTable = pgTable(
   {
     id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
     workspaceId: uuid("workspace_id").references(() => workspacesTable.id).notNull(),
-    threadId: uuid("thread_id").references(() => emailThreadsTable.id).notNull(),
+    threadId: uuid("thread_id").references(() => emailThreadsTable.id),
     nylasMessageId: text("nylas_message_id"),
+    postmarkMessageId: text("postmark_message_id"),
     direction: text("direction").notNull(),
     fromAddress: text("from_address").notNull(),
     toAddresses: text("to_addresses").array().notNull().default(sql`'{}'::text[]`),
