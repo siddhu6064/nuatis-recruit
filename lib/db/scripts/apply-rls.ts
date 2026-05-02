@@ -71,10 +71,16 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
 -- ─────────────────────────────────────────────────
 -- 1. Enable RLS on tenant-scoped tables
 -- ─────────────────────────────────────────────────
-ALTER TABLE workspaces   ENABLE ROW LEVEL SECURITY;
-ALTER TABLE users        ENABLE ROW LEVEL SECURITY;
-ALTER TABLE audit_logs   ENABLE ROW LEVEL SECURITY;
-ALTER TABLE invites      ENABLE ROW LEVEL SECURITY;
+ALTER TABLE workspaces    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE users         ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_logs    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE invites       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE clients       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE jobs          ENABLE ROW LEVEL SECURITY;
+ALTER TABLE candidates    ENABLE ROW LEVEL SECURITY;
+ALTER TABLE applications  ENABLE ROW LEVEL SECURITY;
+ALTER TABLE resumes       ENABLE ROW LEVEL SECURITY;
+ALTER TABLE activities    ENABLE ROW LEVEL SECURITY;
 
 -- ─────────────────────────────────────────────────
 -- 1b. FORCE RLS so the policy applies even to the
@@ -82,18 +88,30 @@ ALTER TABLE invites      ENABLE ROW LEVEL SECURITY;
 --     Postgres is the table owner, so without FORCE
 --     the policy is silently bypassed).
 -- ─────────────────────────────────────────────────
-ALTER TABLE workspaces   FORCE ROW LEVEL SECURITY;
-ALTER TABLE users        FORCE ROW LEVEL SECURITY;
-ALTER TABLE audit_logs   FORCE ROW LEVEL SECURITY;
-ALTER TABLE invites      FORCE ROW LEVEL SECURITY;
+ALTER TABLE workspaces    FORCE ROW LEVEL SECURITY;
+ALTER TABLE users         FORCE ROW LEVEL SECURITY;
+ALTER TABLE audit_logs    FORCE ROW LEVEL SECURITY;
+ALTER TABLE invites       FORCE ROW LEVEL SECURITY;
+ALTER TABLE clients       FORCE ROW LEVEL SECURITY;
+ALTER TABLE jobs          FORCE ROW LEVEL SECURITY;
+ALTER TABLE candidates    FORCE ROW LEVEL SECURITY;
+ALTER TABLE applications  FORCE ROW LEVEL SECURITY;
+ALTER TABLE resumes       FORCE ROW LEVEL SECURITY;
+ALTER TABLE activities    FORCE ROW LEVEL SECURITY;
 
 -- ─────────────────────────────────────────────────
 -- 2. Drop existing policies (idempotent re-run)
 -- ─────────────────────────────────────────────────
-DROP POLICY IF EXISTS workspaces_workspace_isolation  ON workspaces;
-DROP POLICY IF EXISTS users_workspace_isolation       ON users;
-DROP POLICY IF EXISTS audit_logs_workspace_isolation  ON audit_logs;
-DROP POLICY IF EXISTS invites_workspace_isolation     ON invites;
+DROP POLICY IF EXISTS workspaces_workspace_isolation    ON workspaces;
+DROP POLICY IF EXISTS users_workspace_isolation         ON users;
+DROP POLICY IF EXISTS audit_logs_workspace_isolation    ON audit_logs;
+DROP POLICY IF EXISTS invites_workspace_isolation       ON invites;
+DROP POLICY IF EXISTS clients_workspace_isolation       ON clients;
+DROP POLICY IF EXISTS jobs_workspace_isolation          ON jobs;
+DROP POLICY IF EXISTS candidates_workspace_isolation    ON candidates;
+DROP POLICY IF EXISTS applications_workspace_isolation  ON applications;
+DROP POLICY IF EXISTS resumes_workspace_isolation       ON resumes;
+DROP POLICY IF EXISTS activities_workspace_isolation    ON activities;
 
 -- ─────────────────────────────────────────────────
 -- 3. Create workspace-isolation policies
@@ -129,6 +147,43 @@ CREATE POLICY audit_logs_workspace_isolation ON audit_logs
   );
 
 CREATE POLICY invites_workspace_isolation ON invites
+  USING (
+    NULLIF(current_setting('app.current_workspace_id', true), '') IS NULL
+    OR workspace_id::text = current_setting('app.current_workspace_id', true)
+  );
+
+-- Batch 2: ATS core object isolation policies (same NULLIF pattern)
+CREATE POLICY clients_workspace_isolation ON clients
+  USING (
+    NULLIF(current_setting('app.current_workspace_id', true), '') IS NULL
+    OR workspace_id::text = current_setting('app.current_workspace_id', true)
+  );
+
+CREATE POLICY jobs_workspace_isolation ON jobs
+  USING (
+    NULLIF(current_setting('app.current_workspace_id', true), '') IS NULL
+    OR workspace_id::text = current_setting('app.current_workspace_id', true)
+  );
+
+CREATE POLICY candidates_workspace_isolation ON candidates
+  USING (
+    NULLIF(current_setting('app.current_workspace_id', true), '') IS NULL
+    OR workspace_id::text = current_setting('app.current_workspace_id', true)
+  );
+
+CREATE POLICY applications_workspace_isolation ON applications
+  USING (
+    NULLIF(current_setting('app.current_workspace_id', true), '') IS NULL
+    OR workspace_id::text = current_setting('app.current_workspace_id', true)
+  );
+
+CREATE POLICY resumes_workspace_isolation ON resumes
+  USING (
+    NULLIF(current_setting('app.current_workspace_id', true), '') IS NULL
+    OR workspace_id::text = current_setting('app.current_workspace_id', true)
+  );
+
+CREATE POLICY activities_workspace_isolation ON activities
   USING (
     NULLIF(current_setting('app.current_workspace_id', true), '') IS NULL
     OR workspace_id::text = current_setting('app.current_workspace_id', true)
@@ -237,7 +292,8 @@ async function main() {
   const rls = await client.query(`
     SELECT relname, relrowsecurity
     FROM pg_class
-    WHERE relname IN ('workspaces','users','audit_logs','invites')
+    WHERE relname IN ('workspaces','users','audit_logs','invites',
+                      'clients','jobs','candidates','applications','resumes','activities')
     ORDER BY relname
   `);
   console.log("RLS status:");
