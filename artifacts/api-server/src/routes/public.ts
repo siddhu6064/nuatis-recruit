@@ -16,8 +16,6 @@ import multer from "multer";
 import rateLimit from "express-rate-limit";
 import { pool, db, jobsTable, clientsTable, candidatesTable, applicationsTable, resumesTable, activitiesTable, auditLogsTable } from "@workspace/db";
 import { eq, and } from "drizzle-orm";
-import { drizzle } from "drizzle-orm/node-postgres";
-import * as schema from "@workspace/db";
 import { uploadResume } from "../lib/storage";
 import { logger } from "../lib/logger";
 import path from "path";
@@ -84,7 +82,7 @@ function validateResumeFile(file: Express.Multer.File): string | null {
 
 // ── GET /api/public/jobs/:slug ─────────────────────────────────────────────
 router.get("/public/jobs/:slug", async (req: Request, res: Response) => {
-  const { slug } = req.params;
+  const slug = String(req.params.slug);
 
   // No RLS context needed for a read that just looks up by slug (status=open)
   const [job] = await db
@@ -181,53 +179,48 @@ router.post(
         [workspaceId],
       );
 
-      const txDb = drizzle(pgClient as Parameters<typeof drizzle>[0], { schema });
-
       // 3. Find or create candidate by email (exact match within workspace)
       let candidateId: string;
       let candidateCreated = false;
 
-      const [existingCandidate] = await txDb
-        .select({ id: candidatesTable.id })
-        .from(candidatesTable)
-        .where(eq(candidatesTable.workspaceId, workspaceId!));
-
-      // email match via array contains — use raw query for array lookup
-      const emailMatchResult = await pgClient.query(
+      const emailMatchResult = await pgClient.query<{ id: string }>(
         `SELECT id FROM candidates WHERE workspace_id = $1 AND $2 = ANY(emails) LIMIT 1`,
         [workspaceId, email.toLowerCase().trim()],
       );
 
       if (emailMatchResult.rows.length > 0) {
-        candidateId = emailMatchResult.rows[0].id as string;
+        candidateId = emailMatchResult.rows[0].id;
       } else {
-        const [newCandidate] = await txDb
-          .insert(candidatesTable)
-          .values({
-            workspaceId: workspaceId!,
-            name: name.trim(),
-            emails: [email.toLowerCase().trim()],
-            phones: phone?.trim() ? [phone.trim()] : [],
-            source: "public_apply",
-          })
-          .returning({ id: candidatesTable.id });
+        let candInsert: { rows: Array<{ id: string }> };
+        if (phone?.trim()) {
+          candInsert = await pgClient.query<{ id: string }>(
+            `INSERT INTO candidates (workspace_id, name, emails, phones, source)
+             VALUES ($1, $2, ARRAY[$3]::text[], ARRAY[$4]::text[], 'public_apply')
+             RETURNING id`,
+            [workspaceId, name.trim(), email.toLowerCase().trim(), phone.trim()],
+          );
+        } else {
+          candInsert = await pgClient.query<{ id: string }>(
+            `INSERT INTO candidates (workspace_id, name, emails, phones, source)
+             VALUES ($1, $2, ARRAY[$3]::text[], '{}'::text[], 'public_apply')
+             RETURNING id`,
+            [workspaceId, name.trim(), email.toLowerCase().trim()],
+          );
+        }
 
-        candidateId = newCandidate.id;
+        candidateId = candInsert.rows[0].id;
         candidateCreated = true;
 
         // Audit: candidate.create
-        await txDb.insert(auditLogsTable).values({
-          workspaceId: workspaceId!,
-          action: "candidate.create",
-          targetType: "candidate",
-          targetId: candidateId,
-          ip: req.ip ?? null,
-          userAgent: req.headers["user-agent"] ?? null,
-        });
+        await pgClient.query(
+          `INSERT INTO audit_logs (workspace_id, action, target_type, target_id, ip, user_agent)
+           VALUES ($1, 'candidate.create', 'candidate', $2, $3, $4)`,
+          [workspaceId, candidateId, req.ip ?? null, req.headers["user-agent"] ?? null],
+        );
       }
 
       // 4. Check for duplicate application
-      const dupCheck = await pgClient.query(
+      const dupCheck = await pgClient.query<{ id: string }>(
         `SELECT id FROM applications WHERE candidate_id = $1 AND job_id = $2 LIMIT 1`,
         [candidateId, job.id],
       );
@@ -244,50 +237,45 @@ router.post(
       const fileUrl = await uploadResume(workspaceId!, filename, file.buffer, file.mimetype);
 
       // 6. Insert resume row
-      const [resumeRow] = await txDb
-        .insert(resumesTable)
-        .values({
-          workspaceId: workspaceId!,
-          candidateId,
-          fileUrl,
-        })
-        .returning({ id: resumesTable.id });
+      const resumeInsert = await pgClient.query<{ id: string }>(
+        `INSERT INTO resumes (workspace_id, candidate_id, file_url)
+         VALUES ($1, $2, $3) RETURNING id`,
+        [workspaceId, candidateId, fileUrl],
+      );
+      const resumeId = resumeInsert.rows[0].id;
 
       // 7. Create application
-      const [application] = await txDb
-        .insert(applicationsTable)
-        .values({
-          workspaceId: workspaceId!,
-          candidateId,
-          jobId: job.id,
-          stage: "applied",
-          source: "public_apply",
-        })
-        .returning({ id: applicationsTable.id, appliedAt: applicationsTable.appliedAt });
+      const appInsert = await pgClient.query<{ id: string; applied_at: Date | null }>(
+        `INSERT INTO applications (workspace_id, candidate_id, job_id, stage, source)
+         VALUES ($1, $2, $3, 'applied', 'public_apply')
+         RETURNING id, applied_at`,
+        [workspaceId, candidateId, job.id],
+      );
+      const application = appInsert.rows[0];
 
       // 8. Activity row
-      await txDb.insert(activitiesTable).values({
-        workspaceId: workspaceId!,
-        candidateId,
-        type: "application.created",
-        payload: {
-          applicationId: application.id,
-          jobId: job.id,
-          jobTitle: job.title,
-          coverLetter: coverLetter?.trim() ?? null,
-          resumeId: resumeRow.id,
-        },
-      });
+      await pgClient.query(
+        `INSERT INTO activities (workspace_id, candidate_id, type, payload)
+         VALUES ($1, $2, 'application.created', $3::jsonb)`,
+        [
+          workspaceId,
+          candidateId,
+          JSON.stringify({
+            applicationId: application.id,
+            jobId: job.id,
+            jobTitle: job.title,
+            coverLetter: coverLetter?.trim() ?? null,
+            resumeId,
+          }),
+        ],
+      );
 
       // 9. Audit: application.create
-      await txDb.insert(auditLogsTable).values({
-        workspaceId: workspaceId!,
-        action: "application.create",
-        targetType: "application",
-        targetId: application.id,
-        ip: req.ip ?? null,
-        userAgent: req.headers["user-agent"] ?? null,
-      });
+      await pgClient.query(
+        `INSERT INTO audit_logs (workspace_id, action, target_type, target_id, ip, user_agent)
+         VALUES ($1, 'application.create', 'application', $2, $3, $4)`,
+        [workspaceId, application.id, req.ip ?? null, req.headers["user-agent"] ?? null],
+      );
 
       await pgClient.query("COMMIT");
       committed = true;
@@ -300,7 +288,7 @@ router.post(
       res.status(201).json({
         applicationId: application.id,
         candidateId,
-        appliedAt: application.appliedAt?.toISOString() ?? new Date().toISOString(),
+        appliedAt: application.applied_at?.toISOString() ?? new Date().toISOString(),
       });
     } catch (err) {
       if (!committed) {

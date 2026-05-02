@@ -8,6 +8,12 @@ import Dashboard from "@/pages/dashboard";
 import SettingsMembers from "@/pages/settings-members";
 import AcceptInvite from "@/pages/accept-invite";
 import NotFound from "@/pages/not-found";
+import Clients from "@/pages/clients";
+import ClientDetail from "@/pages/client-detail";
+import Jobs from "@/pages/jobs";
+import JobDetail from "@/pages/job-detail";
+import Candidates from "@/pages/candidates";
+import CandidateDetail from "@/pages/candidate-detail";
 
 const queryClient = new QueryClient();
 
@@ -40,6 +46,12 @@ function Router() {
     <Switch>
       <Route path="/" component={HomeRedirect} />
       <Route path="/dashboard" component={Dashboard} />
+      <Route path="/clients" component={Clients} />
+      <Route path="/clients/:id" component={ClientDetail} />
+      <Route path="/jobs" component={Jobs} />
+      <Route path="/jobs/:id" component={JobDetail} />
+      <Route path="/candidates" component={Candidates} />
+      <Route path="/candidates/:id" component={CandidateDetail} />
       <Route path="/settings/members" component={SettingsMembers} />
       <Route path="/accept-invite" component={AcceptInvite} />
       <Route component={NotFound} />

@@ -86,13 +86,14 @@ router.get("/candidates/:id", async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const txDb = req.db ?? db;
+  const candidateId = String(req.params.id);
 
   const [candidate] = await txDb
     .select()
     .from(candidatesTable)
     .where(
       and(
-        eq(candidatesTable.id, req.params.id),
+        eq(candidatesTable.id, candidateId),
         eq(candidatesTable.workspaceId, user.workspaceId),
       ),
     );
@@ -114,13 +115,14 @@ router.patch("/candidates/:id", async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const txDb = req.db ?? db;
+  const candidateId = String(req.params.id);
 
   const [existing] = await txDb
     .select()
     .from(candidatesTable)
     .where(
       and(
-        eq(candidatesTable.id, req.params.id),
+        eq(candidatesTable.id, candidateId),
         eq(candidatesTable.workspaceId, user.workspaceId),
       ),
     );
@@ -150,7 +152,7 @@ router.patch("/candidates/:id", async (req: Request, res: Response) => {
       workspaceId: user.workspaceId,
       action: "candidate.update",
       targetType: "candidate",
-      targetId: req.params.id,
+      targetId: candidateId,
       userId: user.id,
       ip: req.ip ?? null,
       userAgent: req.headers["user-agent"] ?? null,
@@ -159,7 +161,7 @@ router.patch("/candidates/:id", async (req: Request, res: Response) => {
       txDb
         .update(candidatesTable)
         .set(patch)
-        .where(eq(candidatesTable.id, req.params.id))
+        .where(eq(candidatesTable.id, candidateId))
         .returning(),
   );
 

@@ -28,13 +28,19 @@ function getInitials(user: { email?: string | null; firstName?: string | null; l
   return user.email?.[0]?.toUpperCase() ?? "?";
 }
 
+const NAV_LINKS = [
+  { href: "/clients", label: "Clients" },
+  { href: "/jobs", label: "Jobs" },
+  { href: "/candidates", label: "Candidates" },
+];
+
 export function Nav() {
   const { user, logout } = useAuth();
   const { data: workspace } = useWorkspace();
 
   return (
-    <header className="h-14 border-b border-border bg-white flex items-center px-6 gap-4">
-      <div className="flex items-center gap-2 flex-1">
+    <header className="h-14 border-b border-border bg-white flex items-center px-6 gap-6">
+      <div className="flex items-center gap-2">
         <div className="w-7 h-7 rounded-md bg-primary flex items-center justify-center">
           <span className="text-primary-foreground text-xs font-bold">N</span>
         </div>
@@ -42,6 +48,14 @@ export function Nav() {
           {workspace?.name ?? "Nuatis Recruit"}
         </span>
       </div>
+
+      <nav className="flex items-center gap-1 flex-1">
+        {NAV_LINKS.map((link) => (
+          <Link key={link.href} href={link.href} className="px-3 py-1.5 text-sm text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors">
+            {link.label}
+          </Link>
+        ))}
+      </nav>
 
       {user && (
         <DropdownMenu>

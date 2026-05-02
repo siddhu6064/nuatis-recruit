@@ -63,7 +63,6 @@ router.get("/clients", async (req: Request, res: Response) => {
     .from(clientsTable)
     .where(eq(clientsTable.workspaceId, user.workspaceId));
 
-  // Count open jobs per client
   const openJobCounts = await txDb
     .select({ clientId: jobsTable.clientId, count: count() })
     .from(jobsTable)
@@ -86,13 +85,14 @@ router.get("/clients/:id", async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const txDb = req.db ?? db;
+  const clientId = String(req.params.id);
 
   const [client] = await txDb
     .select()
     .from(clientsTable)
     .where(
       and(
-        eq(clientsTable.id, req.params.id),
+        eq(clientsTable.id, clientId),
         eq(clientsTable.workspaceId, user.workspaceId),
       ),
     );
@@ -110,13 +110,14 @@ router.patch("/clients/:id", async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const txDb = req.db ?? db;
+  const clientId = String(req.params.id);
 
   const [existing] = await txDb
     .select()
     .from(clientsTable)
     .where(
       and(
-        eq(clientsTable.id, req.params.id),
+        eq(clientsTable.id, clientId),
         eq(clientsTable.workspaceId, user.workspaceId),
       ),
     );
@@ -140,7 +141,7 @@ router.patch("/clients/:id", async (req: Request, res: Response) => {
       workspaceId: user.workspaceId,
       action: "client.update",
       targetType: "client",
-      targetId: req.params.id,
+      targetId: clientId,
       userId: user.id,
       ip: req.ip ?? null,
       userAgent: req.headers["user-agent"] ?? null,
@@ -149,7 +150,7 @@ router.patch("/clients/:id", async (req: Request, res: Response) => {
       txDb
         .update(clientsTable)
         .set(patch)
-        .where(eq(clientsTable.id, req.params.id))
+        .where(eq(clientsTable.id, clientId))
         .returning(),
   );
 

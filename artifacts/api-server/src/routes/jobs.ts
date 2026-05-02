@@ -139,7 +139,7 @@ router.get("/jobs/:id", async (req: Request, res: Response) => {
     .from(jobsTable)
     .where(
       and(
-        eq(jobsTable.id, req.params.id),
+        eq(jobsTable.id, String(req.params.id)),
         eq(jobsTable.workspaceId, user.workspaceId),
       ),
     );
@@ -157,13 +157,14 @@ router.patch("/jobs/:id", async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const txDb = req.db ?? db;
+  const jobId = String(req.params.id);
 
   const [existing] = await txDb
     .select()
     .from(jobsTable)
     .where(
       and(
-        eq(jobsTable.id, req.params.id),
+        eq(jobsTable.id, jobId),
         eq(jobsTable.workspaceId, user.workspaceId),
       ),
     );
@@ -199,7 +200,7 @@ router.patch("/jobs/:id", async (req: Request, res: Response) => {
       txDb
         .update(jobsTable)
         .set(patch)
-        .where(eq(jobsTable.id, req.params.id))
+        .where(eq(jobsTable.id, jobId))
         .returning(),
   );
 
@@ -211,13 +212,14 @@ router.post("/jobs/:id/publish", async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
   const txDb = req.db ?? db;
+  const jobId = String(req.params.id);
 
   const [existing] = await txDb
     .select()
     .from(jobsTable)
     .where(
       and(
-        eq(jobsTable.id, req.params.id),
+        eq(jobsTable.id, jobId),
         eq(jobsTable.workspaceId, user.workspaceId),
       ),
     );
@@ -233,7 +235,7 @@ router.post("/jobs/:id/publish", async (req: Request, res: Response) => {
       workspaceId: user.workspaceId,
       action: "job.publish",
       targetType: "job",
-      targetId: req.params.id,
+      targetId: jobId,
       userId: user.id,
       ip: req.ip ?? null,
       userAgent: req.headers["user-agent"] ?? null,
@@ -242,7 +244,7 @@ router.post("/jobs/:id/publish", async (req: Request, res: Response) => {
       txDb
         .update(jobsTable)
         .set({ status: "open" })
-        .where(eq(jobsTable.id, req.params.id))
+        .where(eq(jobsTable.id, jobId))
         .returning(),
   );
 
