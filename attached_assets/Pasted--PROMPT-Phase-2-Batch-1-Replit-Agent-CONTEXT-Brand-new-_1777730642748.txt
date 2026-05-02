@@ -1,0 +1,176 @@
+▶ PROMPT [Phase 2 · Batch 1 · Replit Agent]
+
+CONTEXT
+Brand new Replit project. Empty codebase. We are starting Phase 2 of 
+the Nuatis Recruit build — an AI-native B2B SaaS recruiting platform 
+for boutique tech staffing agencies. We are skipping any vendor 
+provisioning beyond what Replit provides natively. Use Replit's 
+built-in services for everything possible.
+
+GOAL
+A user can sign up via Replit Auth, automatically gets a workspace, 
+invites a teammate, both log in, both see workspace members listed. 
+Code is pushed to GitHub.
+
+SCOPE — BUILD THIS
+
+1. Turborepo monorepo with these workspaces:
+   - apps/web — Next.js 14 (App Router) + TypeScript + Tailwind + 
+     shadcn/ui (initialized via `npx shadcn@latest init`)
+   - apps/ai — FastAPI (Python 3.11) + Pydantic v2 + Uvicorn (only a 
+     /health endpoint at this batch)
+   - packages/db — Drizzle ORM + Drizzle Kit migrations
+   - packages/types — shared Zod schemas
+   - packages/ui — shared shadcn components placeholder
+   - packages/auth — auth abstraction layer (CRITICAL — see item 4)
+
+2. Replit Postgres provisioned via the Database tab. Drizzle schema 
+   in packages/db with these tables:
+   - organizations (id uuid pk default gen_random_uuid(), name text 
+     not null, slug text unique not null, plan_tier text default 
+     'starter', created_at timestamptz default now())
+   - workspaces (id uuid pk, organization_id uuid fk, name text, 
+     settings_json jsonb default '{}', created_at timestamptz)
+   - users (id uuid pk, workspace_id uuid fk, external_auth_id text 
+     unique not null, external_auth_provider text not null default 
+     'replit', email text not null, name text, role text check 
+     (role in ('owner','recruiter','readonly')) default 'recruiter', 
+     last_active_at timestamptz, created_at timestamptz)
+   - audit_logs (id uuid pk, workspace_id uuid fk, user_id uuid, 
+     action text, target_type text, target_id uuid, diff_json jsonb, 
+     ip text, user_agent text, created_at timestamptz default now())
+
+   Note the columns external_auth_id and external_auth_provider — 
+   these are deliberately generic so we can swap auth providers later 
+   without a schema migration.
+
+3. Postgres Row-Level Security policies on workspaces, users, and 
+   audit_logs filtering by current_setting('app.current_workspace_id'). 
+   Implement a Postgres connection middleware that calls 
+   `SET LOCAL app.current_workspace_id = $1` on every request, bound 
+   to the authenticated user's workspace.
+
+4. Replit Auth integrated for sign-in. CRITICAL ARCHITECTURE 
+   REQUIREMENT — wrap all Replit Auth calls behind packages/auth:
+   - packages/auth/src/index.ts exports these functions only:
+     • getCurrentUser() → returns {id, email, name, workspace_id, 
+       role} or null
+     • requireAuth() → returns same, throws 401 if not authed
+     • signOut() → ends the session
+     • getInviteToken(workspaceId, email) → creates invite record
+     • acceptInvite(token) → links new auth user to existing 
+       workspace
+   - Internally, this package uses Replit Auth's headers/cookies 
+   - Pages and API routes in apps/web import from packages/auth ONLY. 
+     They must NEVER import @replit/auth directly. This makes the 
+     future swap to Clerk a one-file change.
+   - Add a comment block at the top of packages/auth/src/index.ts:
+     "// AUTH ABSTRACTION — swap implementation here to change 
+     providers (Replit Auth → Clerk). Pages/routes consume these 
+     exports only."
+
+5. On first sign-in via Replit Auth, atomically create organization 
+   + workspace + user records with role='owner' if no user record 
+   exists for that external_auth_id. Use a Postgres transaction.
+
+6. Invite flow: at /settings/members, owners can generate an invite 
+   link tied to a workspace_id + invitee email. Store invites in an 
+   `invites` table (id, workspace_id, email, token unique, expires_at, 
+   used_at). Invitee clicks link → signs in via Replit Auth → invite 
+   token consumed → user added to workspace as role='recruiter'.
+
+7. Three pages in apps/web:
+   - / — redirects to Replit Auth sign-in if not authed, /dashboard 
+     if authed
+   - /dashboard — shows "Welcome, [user.name]" + workspace member 
+     list with roles and last_active_at
+   - /settings/members — owner-only; "Generate invite link" form + 
+     member list with role dropdowns + Remove button
+
+8. FastAPI service in apps/ai with only:
+   - GET /health → returns {"status": "ok"} (200)
+   - CORS configured to allow apps/web origin only
+   No AI features yet. No /test-error. No other endpoints.
+
+9. Top navigation in apps/web: workspace name on the left, user 
+   avatar dropdown on the right with "Settings" and "Sign out".
+
+10. GitHub integration: initialize git, create initial commit, push 
+    to https://github.com/siddhu6064/nuatis-recruit (the empty 
+    private repo I created). Configure the Git pane in Replit so I 
+    can push subsequent batches with one click.
+
+TECH CONSTRAINTS
+
+- Drizzle ORM only. NOT Prisma.
+- Replit Auth for this batch (NOT Clerk, NOT NextAuth) — but wrapped 
+  behind packages/auth so we can swap later.
+- shadcn/ui components only. No MUI, Chakra, Ant Design.
+- All secrets via Replit Secrets (DATABASE_URL is auto-provisioned 
+  by Replit Postgres). No hardcoded values.
+- Use pnpm for the JS workspaces (Turborepo standard).
+- Postgres uuid PKs use gen_random_uuid(); enable pgcrypto extension 
+  on the database.
+- Replit Auth setup follows Replit's official docs — do not invent 
+  custom OAuth flows.
+
+SCOPE — DO NOT BUILD
+
+1. Resume parser, JD parser, match scoring, embeddings, AI features 
+   of any kind.
+2. candidates, jobs, clients, applications, resumes tables — those 
+   come in Batch 2.
+3. Stripe billing or any payment integration.
+4. Nylas, Twilio, Deepgram, ElevenLabs, Recall.ai integrations.
+5. Email sending. Replit Auth handles its own auth emails.
+6. Sentry, PostHog, monitoring tools — defer to a later batch.
+7. Vercel/Fly.io deploy configs — staying on Replit Deployments.
+8. Custom domains.
+9. PWA, mobile responsiveness polish, dark mode. Light mode only.
+10. Tests. Verifying manually for this batch.
+11. Marketing site (apps/marketing) — defer to a later batch.
+
+ACCEPTANCE — BEFORE YOU REPORT DONE
+
+1. User A signs up via Replit Auth. Inspect the database — 
+   organization + workspace + user (role='owner') rows exist for 
+   them. external_auth_provider='replit'.
+2. User A goes to /settings/members and generates an invite link 
+   for b@test.com.
+3. User B clicks the invite link, signs in via Replit Auth. 
+   Database shows User B added to User A's workspace with 
+   role='recruiter'. Invite token has used_at populated.
+4. Cross-tenant isolation test: in a SQL shell, run 
+   `SET LOCAL app.current_workspace_id = '<userA's workspace>'; 
+   SELECT * FROM users;` — sees both User A and User B. Change to 
+   a fake UUID — returns zero rows.
+5. /dashboard renders the member list correctly when logged in as 
+   either User A or User B.
+6. apps/ai /health endpoint returns 200.
+7. `git log --oneline` in Replit shell shows commits pushed to 
+   github.com/siddhu6064/nuatis-recruit on main.
+8. The packages/auth folder contains the abstraction layer. Search 
+   the codebase for `@replit/auth` (or whatever the SDK is named) — 
+   it should appear ONLY inside packages/auth, NOWHERE else.
+
+HARD STOP
+
+After completing the 10 SCOPE items and verifying the 8 ACCEPTANCE 
+tests, STOP. Do not begin Batch 2. Do not start scaffolding 
+candidates, jobs, or any other module. Do not "improve" the auth 
+flow with extra features.
+
+Report back with:
+  • SUMMARY: 5 bullets of what shipped, with exact file paths for 
+    the most important files (especially packages/auth/src/index.ts)
+  • ERRORS: any error messages or stack traces hit during build
+  • SKIPPED: any SCOPE item you couldn't complete and the reason
+  • OPEN QUESTIONS: any decisions where you guessed and want me to 
+    confirm
+  • ACCEPTANCE STATUS: pass/fail for each of the 8 acceptance tests, 
+    one line each
+  • AUTH ABSTRACTION CHECK: confirm Replit Auth SDK imports appear 
+    ONLY in packages/auth, with the exact list of files that import 
+    auth-related symbols
+
+Then WAIT for my next prompt. Do not begin anything new.

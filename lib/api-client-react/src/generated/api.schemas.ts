@@ -8,3 +8,125 @@
 export interface HealthStatus {
   status: string;
 }
+
+export interface AuthUser {
+  id: string;
+  /** @nullable */
+  email: string | null;
+  /** @nullable */
+  firstName: string | null;
+  /** @nullable */
+  lastName: string | null;
+  /** @nullable */
+  profileImageUrl: string | null;
+  workspaceId: string;
+  role: string;
+}
+
+export interface AuthUserEnvelope {
+  user: AuthUser | null;
+}
+
+export interface MobileTokenExchangeRequest {
+  /** @minLength 1 */
+  code: string;
+  /** @minLength 1 */
+  code_verifier: string;
+  /** @minLength 1 */
+  redirect_uri: string;
+  /** @minLength 1 */
+  state: string;
+  /** @minLength 1 */
+  nonce?: string;
+}
+
+export interface MobileTokenExchangeSuccess {
+  token: string;
+}
+
+export const LogoutSuccessValue = {
+  success: true,
+} as const;
+export type LogoutSuccess = typeof LogoutSuccessValue;
+
+export interface ErrorEnvelope {
+  error: string;
+}
+
+export interface WorkspaceInfo {
+  id: string;
+  name: string;
+  organizationId: string;
+}
+
+export interface WorkspaceMember {
+  id: string;
+  email: string;
+  /** @nullable */
+  name: string | null;
+  role: string;
+  /** @nullable */
+  lastActiveAt?: string | null;
+  createdAt: string;
+}
+
+export interface WorkspaceMembersResponse {
+  members: WorkspaceMember[];
+}
+
+export type UpdateRoleBodyRole =
+  (typeof UpdateRoleBodyRole)[keyof typeof UpdateRoleBodyRole];
+
+export const UpdateRoleBodyRole = {
+  owner: "owner",
+  recruiter: "recruiter",
+  readonly: "readonly",
+} as const;
+
+export interface UpdateRoleBody {
+  role: UpdateRoleBodyRole;
+}
+
+export interface CreateInviteBody {
+  email: string;
+}
+
+export interface InviteResponse {
+  token: string;
+  inviteUrl: string;
+}
+
+export interface InviteItem {
+  id: string;
+  email: string;
+  expiresAt: string;
+  /** @nullable */
+  usedAt?: string | null;
+  createdAt: string;
+}
+
+export interface InviteListResponse {
+  invites: InviteItem[];
+}
+
+export interface AcceptInviteBody {
+  token: string;
+}
+
+/**
+ * Opaque session token — `Bearer <sid>`.
+ */
+export type AuthorizationSessionHeaderParameter = string;
+
+export type BeginBrowserLoginParams = {
+  /**
+   * Relative path to redirect to after login (must start with `/`).
+   */
+  returnTo?: string;
+};
+
+export type HandleBrowserLoginCallbackParams = {
+  code?: string;
+  state?: string;
+  iss?: string;
+};

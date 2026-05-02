@@ -14,3 +14,188 @@ import * as zod from "zod";
 export const HealthCheckResponse = zod.object({
   status: zod.string(),
 });
+
+/**
+ * @summary Get the currently authenticated user
+ */
+export const GetCurrentAuthUserHeader = zod.object({
+  Authorization: zod
+    .string()
+    .optional()
+    .describe("Opaque session token — `Bearer <sid>`."),
+});
+
+export const GetCurrentAuthUserResponse = zod.object({
+  user: zod.union([
+    zod.object({
+      id: zod.string(),
+      email: zod.string().email().nullable(),
+      firstName: zod.string().nullable(),
+      lastName: zod.string().nullable(),
+      profileImageUrl: zod.string().nullable(),
+      workspaceId: zod.string(),
+      role: zod.string(),
+    }),
+    zod.null(),
+  ]),
+});
+
+/**
+ * @summary Start the browser OIDC login flow
+ */
+export const BeginBrowserLoginQueryParams = zod.object({
+  returnTo: zod.coerce
+    .string()
+    .optional()
+    .describe(
+      "Relative path to redirect to after login (must start with `\/`).",
+    ),
+});
+
+/**
+ * @summary Complete the browser OIDC login flow
+ */
+export const HandleBrowserLoginCallbackQueryParams = zod.object({
+  code: zod.coerce.string().optional(),
+  state: zod.coerce.string().optional(),
+  iss: zod.coerce.string().url().optional(),
+});
+
+/**
+ * @summary Clear the session and begin OIDC logout
+ */
+export const LogoutBrowserSessionHeader = zod.object({
+  Authorization: zod
+    .string()
+    .optional()
+    .describe("Opaque session token — `Bearer <sid>`."),
+});
+
+/**
+ * @summary Exchange a mobile OIDC code for a session token
+ */
+
+export const ExchangeMobileAuthorizationCodeBody = zod.object({
+  code: zod.string().min(1),
+  code_verifier: zod.string().min(1),
+  redirect_uri: zod.string().url().min(1),
+  state: zod.string().min(1),
+  nonce: zod.string().min(1).optional(),
+});
+
+export const ExchangeMobileAuthorizationCodeResponse = zod.object({
+  token: zod.string(),
+});
+
+/**
+ * @summary Delete a mobile session token
+ */
+export const LogoutMobileSessionHeader = zod.object({
+  Authorization: zod
+    .string()
+    .optional()
+    .describe("Opaque session token — `Bearer <sid>`."),
+});
+
+export const LogoutMobileSessionResponse = zod.object({
+  success: zod.boolean(),
+});
+
+/**
+ * @summary Get current workspace info
+ */
+export const GetWorkspaceResponse = zod.object({
+  id: zod.string(),
+  name: zod.string(),
+  organizationId: zod.string(),
+});
+
+/**
+ * @summary List workspace members
+ */
+export const ListWorkspaceMembersResponse = zod.object({
+  members: zod.array(
+    zod.object({
+      id: zod.string(),
+      email: zod.string(),
+      name: zod.string().nullable(),
+      role: zod.string(),
+      lastActiveAt: zod.string().nullish(),
+      createdAt: zod.string(),
+    }),
+  ),
+});
+
+/**
+ * @summary Update a member's role (owner only)
+ */
+export const UpdateMemberRoleParams = zod.object({
+  userId: zod.coerce.string(),
+});
+
+export const UpdateMemberRoleBody = zod.object({
+  role: zod.enum(["owner", "recruiter", "readonly"]),
+});
+
+export const UpdateMemberRoleResponse = zod.object({
+  id: zod.string(),
+  email: zod.string(),
+  name: zod.string().nullable(),
+  role: zod.string(),
+  lastActiveAt: zod.string().nullish(),
+  createdAt: zod.string(),
+});
+
+/**
+ * @summary Remove a member (owner only)
+ */
+export const RemoveMemberParams = zod.object({
+  userId: zod.coerce.string(),
+});
+
+export const RemoveMemberResponse = zod.object({
+  success: zod.boolean(),
+});
+
+/**
+ * @summary Generate an invite link (owner only)
+ */
+export const CreateInviteBody = zod.object({
+  email: zod.string().email(),
+});
+
+export const CreateInviteResponse = zod.object({
+  token: zod.string(),
+  inviteUrl: zod.string(),
+});
+
+/**
+ * @summary List pending invites (owner only)
+ */
+export const ListInvitesResponse = zod.object({
+  invites: zod.array(
+    zod.object({
+      id: zod.string(),
+      email: zod.string(),
+      expiresAt: zod.string(),
+      usedAt: zod.string().nullish(),
+      createdAt: zod.string(),
+    }),
+  ),
+});
+
+/**
+ * @summary Accept an invite token
+ */
+export const AcceptInviteBody = zod.object({
+  token: zod.string(),
+});
+
+export const AcceptInviteResponse = zod.object({
+  id: zod.string(),
+  email: zod.string(),
+  name: zod.string().nullable(),
+  role: zod.string(),
+  lastActiveAt: zod.string().nullish(),
+  createdAt: zod.string(),
+});
