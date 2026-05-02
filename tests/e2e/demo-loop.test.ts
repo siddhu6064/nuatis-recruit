@@ -141,6 +141,8 @@ describe("E2E: apply → Inngest pipeline → match_score", () => {
     if (wsIds.length) {
       await db.query(`DELETE FROM match_scores       WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);
       await db.query(`DELETE FROM fairness_audit_log WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);
+      await db.query(`DELETE FROM stage_automations  WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);
+      await db.query(`DELETE FROM rejection_reasons  WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);
       await db.query(`DELETE FROM activities         WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);
       await db.query(`DELETE FROM resumes            WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);
       await db.query(`DELETE FROM applications       WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);

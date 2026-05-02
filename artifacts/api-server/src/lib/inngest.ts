@@ -1,10 +1,11 @@
 /**
  * Inngest client + function definitions for Nuatis Recruit.
  *
- * Three durable functions:
- *   a. resume.uploaded  → parse resume → embed → update candidates
- *   b. job.created      → parse JD → embed → update jobs
- *   c. application.created → match → upsert match_scores
+ * Four durable functions:
+ *   a. resume.uploaded      → parse resume → embed → update candidates
+ *   b. job.created          → parse JD → embed → update jobs
+ *   c. application.created  → match → upsert match_scores
+ *   d. stage.entered        → execute stage automations (STUB — Phase 4 for real execution)
  *
  * All LLM calls inside the AI service are STUBBED (see artifacts/ai-server).
  * Failures retry 3× with exponential backoff.
@@ -18,10 +19,7 @@ export const inngest = new Inngest({ id: "nuatis-recruit" });
 
 // ── Helper: call AI service endpoints ─────────────────────────────────────
 
-async function callAI<T>(
-  path: string,
-  body: Record<string, unknown>,
-): Promise<T> {
+async function callAI<T>(path: string, body: Record<string, unknown>): Promise<T> {
   const res = await fetch(`${AI_BASE}${path}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -34,7 +32,7 @@ async function callAI<T>(
   return res.json() as Promise<T>;
 }
 
-// ── DB helper (raw pg — avoids RLS SET ROLE for background jobs) ───────────
+// ── DB helper (raw pg — bypasses RLS SET ROLE for background jobs) ─────────
 
 async function dbQuery(sql: string, params: unknown[] = []) {
   const { default: pg } = await import("pg");
@@ -79,6 +77,18 @@ type ApplicationCreatedEvent = {
   };
 };
 
+type StageEnteredEvent = {
+  name: "stage.entered";
+  data: {
+    applicationId: string;
+    candidateId: string;
+    jobId: string;
+    workspaceId: string;
+    stageKey: string;
+    automationIds: string[];
+  };
+};
+
 // ── Function: resume.uploaded ──────────────────────────────────────────────
 
 export const parseResumeJob = inngest.createFunction(
@@ -106,34 +116,23 @@ export const parseResumeJob = inngest.createFunction(
         (parsed.summary as string) ?? "",
         ((parsed.skills as string[]) ?? []).join(" "),
       ].join(" ");
-      return callAI<{ vector: number[]; model_version: string }>("/embed", {
-        text,
-      });
+      return callAI<{ vector: number[]; model_version: string }>("/embed", { text });
     });
 
     await step.run("save-parsed-resume", async () => {
-      await dbQuery(
-        `UPDATE resumes SET parsed = $1, parser_version = $2 WHERE id = $3`,
-        [JSON.stringify(parsed), parsed.model_version ?? "stub", resumeId],
-      );
-      // Store parsed_resume on candidate for quick access in /match
-      await dbQuery(
-        `UPDATE candidates SET parsed_resume = $1 WHERE id = $2`,
-        [JSON.stringify(parsed), candidateId],
-      );
+      await dbQuery(`UPDATE resumes SET parsed = $1, parser_version = $2 WHERE id = $3`,
+        [JSON.stringify(parsed), parsed.model_version ?? "stub", resumeId]);
+      await dbQuery(`UPDATE candidates SET parsed_resume = $1 WHERE id = $2`,
+        [JSON.stringify(parsed), candidateId]);
       logger.info({ resumeId, candidateId }, "Parsed resume saved");
     });
 
     await step.run("save-embedding", async () => {
-      // Only write if pgvector extension is present (column may not exist in older envs)
       try {
-        await dbQuery(
-          `UPDATE candidates SET embedding = $1::vector WHERE id = $2`,
-          [`[${embedResult.vector.join(",")}]`, candidateId],
-        );
+        await dbQuery(`UPDATE candidates SET embedding = $1::vector WHERE id = $2`,
+          [`[${embedResult.vector.join(",")}]`, candidateId]);
         logger.info({ candidateId }, "Candidate embedding saved");
       } catch (err) {
-        // [SENTRY] TODO: route to Sentry once set up
         logger.warn({ err, candidateId }, "Embedding save skipped (pgvector unavailable?)");
       }
     });
@@ -167,28 +166,21 @@ export const parseJobJob = inngest.createFunction(
         ((parsedJD.required_skills as string[]) ?? []).join(" "),
         ((parsedJD.key_responsibilities as string[]) ?? []).join(" "),
       ].join(" ");
-      return callAI<{ vector: number[]; model_version: string }>("/embed", {
-        text,
-      });
+      return callAI<{ vector: number[]; model_version: string }>("/embed", { text });
     });
 
     await step.run("save-parsed-jd", async () => {
-      await dbQuery(
-        `UPDATE jobs SET parsed_jd = $1 WHERE id = $2`,
-        [JSON.stringify(parsedJD), jobId],
-      );
+      await dbQuery(`UPDATE jobs SET parsed_jd = $1 WHERE id = $2`,
+        [JSON.stringify(parsedJD), jobId]);
       logger.info({ jobId }, "Parsed JD saved");
     });
 
     await step.run("save-job-embedding", async () => {
       try {
-        await dbQuery(
-          `UPDATE jobs SET embedding = $1::vector WHERE id = $2`,
-          [`[${embedResult.vector.join(",")}]`, jobId],
-        );
+        await dbQuery(`UPDATE jobs SET embedding = $1::vector WHERE id = $2`,
+          [`[${embedResult.vector.join(",")}]`, jobId]);
         logger.info({ jobId }, "Job embedding saved");
       } catch (err) {
-        // [SENTRY] TODO: route to Sentry once set up
         logger.warn({ err, jobId }, "Job embedding save skipped (pgvector unavailable?)");
       }
     });
@@ -210,7 +202,6 @@ export const scoreApplicationJob = inngest.createFunction(
     const { applicationId, candidateId, jobId, workspaceId, resumeId } =
       (event as unknown as ApplicationCreatedEvent).data;
 
-    // Find the most recent resume for this candidate if none supplied
     const effectiveResumeId = await step.run("resolve-resume", async () => {
       if (resumeId) return resumeId;
       const result = await dbQuery(
@@ -244,22 +235,14 @@ export const scoreApplicationJob = inngest.createFunction(
         `INSERT INTO match_scores
            (workspace_id, application_id, score, breakdown, rationale, evidence_quotes, model_version)
          VALUES ($1, $2, $3, $4, $5, $6, $7)
-         ON CONFLICT (application_id)
-         DO UPDATE SET
-           score = EXCLUDED.score,
-           breakdown = EXCLUDED.breakdown,
-           rationale = EXCLUDED.rationale,
-           evidence_quotes = EXCLUDED.evidence_quotes,
-           model_version = EXCLUDED.model_version,
-           created_at = now()`,
+         ON CONFLICT (application_id) DO UPDATE SET
+           score = EXCLUDED.score, breakdown = EXCLUDED.breakdown,
+           rationale = EXCLUDED.rationale, evidence_quotes = EXCLUDED.evidence_quotes,
+           model_version = EXCLUDED.model_version, created_at = now()`,
         [
-          workspaceId,
-          applicationId,
-          matchResult.score,
-          JSON.stringify(matchResult.breakdown),
-          matchResult.rationale,
-          JSON.stringify(matchResult.evidence_quotes),
-          matchResult.model_version,
+          workspaceId, applicationId, matchResult.score,
+          JSON.stringify(matchResult.breakdown), matchResult.rationale,
+          JSON.stringify(matchResult.evidence_quotes), matchResult.model_version,
         ],
       );
       logger.info({ applicationId, score: matchResult.score }, "Match score upserted");
@@ -269,4 +252,42 @@ export const scoreApplicationJob = inngest.createFunction(
   },
 );
 
-export const functions = [parseResumeJob, parseJobJob, scoreApplicationJob];
+// ── Function: stage.entered (STUB) ─────────────────────────────────────────
+// Fires when an application moves into a stage that has matching automations.
+// Phase 4 will implement actual email/task/notification execution.
+
+export const stageEnteredJob = inngest.createFunction(
+  {
+    id: "stage-entered",
+    name: "Execute stage automations on stage entry (stub)",
+    retries: 3,
+    triggers: [{ event: "stage.entered" }],
+  },
+  async ({ event, step }) => {
+    const { applicationId, candidateId, workspaceId, stageKey, automationIds } =
+      (event as unknown as StageEnteredEvent).data;
+
+    for (const automationId of automationIds) {
+      await step.run(`stub-automation-${automationId}`, async () => {
+        logger.info(
+          { automationId, applicationId, stageKey },
+          "STUB: would execute stage automation",
+        );
+        // Write an activity so the stub is observable in DB
+        await dbQuery(
+          `INSERT INTO activities (workspace_id, candidate_id, type, payload)
+           VALUES ($1, $2, 'automation.stub', $3)`,
+          [
+            workspaceId,
+            candidateId,
+            JSON.stringify({ automationId, stageKey, applicationId, stub: true }),
+          ],
+        );
+      });
+    }
+
+    return { applicationId, stageKey, automationsStubbed: automationIds.length };
+  },
+);
+
+export const functions = [parseResumeJob, parseJobJob, scoreApplicationJob, stageEnteredJob];

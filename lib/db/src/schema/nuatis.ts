@@ -11,8 +11,6 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 
-// ─── Batch 3: AI / match score tables ────────────────────────────
-
 export const organizationsTable = pgTable("organizations", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   name: text("name").notNull(),
@@ -43,10 +41,7 @@ export const usersTable = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
   (table) => [
-    check(
-      "users_role_check",
-      sql`${table.role} IN ('owner', 'recruiter', 'readonly')`,
-    ),
+    check("users_role_check", sql`${table.role} IN ('owner', 'recruiter', 'readonly')`),
   ],
 );
 
@@ -65,9 +60,7 @@ export const auditLogsTable = pgTable("audit_logs", {
 
 export const invitesTable = pgTable("invites", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  workspaceId: uuid("workspace_id")
-    .references(() => workspacesTable.id)
-    .notNull(),
+  workspaceId: uuid("workspace_id").references(() => workspacesTable.id).notNull(),
   email: text("email").notNull(),
   token: text("token").unique().notNull(),
   expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
@@ -81,9 +74,7 @@ export const invitesTable = pgTable("invites", {
 
 export const clientsTable = pgTable("clients", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  workspaceId: uuid("workspace_id")
-    .references(() => workspacesTable.id)
-    .notNull(),
+  workspaceId: uuid("workspace_id").references(() => workspacesTable.id).notNull(),
   name: text("name").notNull(),
   primaryContactName: text("primary_contact_name"),
   contactEmail: text("contact_email"),
@@ -92,16 +83,24 @@ export const clientsTable = pgTable("clients", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 });
 
+// Default kanban stages — stored as JSONB default in jobs table
+const DEFAULT_STAGES_SQL = sql`'[
+  {"key":"sourced",  "label":"Sourced",   "order":0},
+  {"key":"applied",  "label":"Applied",   "order":1},
+  {"key":"screen",   "label":"Screen",    "order":2},
+  {"key":"hm_round", "label":"HM Round",  "order":3},
+  {"key":"final",    "label":"Final",     "order":4},
+  {"key":"offer",    "label":"Offer",     "order":5},
+  {"key":"placed",   "label":"Placed",    "order":6},
+  {"key":"rejected", "label":"Rejected",  "order":7}
+]'::jsonb`;
+
 export const jobsTable = pgTable(
   "jobs",
   {
     id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-    workspaceId: uuid("workspace_id")
-      .references(() => workspacesTable.id)
-      .notNull(),
-    clientId: uuid("client_id")
-      .references(() => clientsTable.id)
-      .notNull(),
+    workspaceId: uuid("workspace_id").references(() => workspacesTable.id).notNull(),
+    clientId: uuid("client_id").references(() => clientsTable.id).notNull(),
     title: text("title").notNull(),
     description: text("description"),
     salaryMin: integer("salary_min"),
@@ -112,7 +111,9 @@ export const jobsTable = pgTable(
     slug: text("slug").notNull(),
     customFields: jsonb("custom_fields").default({}),
     parsedJd: jsonb("parsed_jd"),
-    // NOTE: embedding vector(3072) added via raw SQL in apply-rls migration (pgvector extension).
+    // Batch 4: per-job kanban stage definitions
+    stagesJson: jsonb("stages_json").default(DEFAULT_STAGES_SQL).notNull(),
+    // NOTE: embedding vector(1536) added via raw SQL in apply-rls migration (pgvector).
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
   (table) => [
@@ -130,9 +131,7 @@ export const jobsTable = pgTable(
 
 export const candidatesTable = pgTable("candidates", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  workspaceId: uuid("workspace_id")
-    .references(() => workspacesTable.id)
-    .notNull(),
+  workspaceId: uuid("workspace_id").references(() => workspacesTable.id).notNull(),
   name: text("name").notNull(),
   emails: text("emails").array().default(sql`'{}'::text[]`),
   phones: text("phones").array().default(sql`'{}'::text[]`),
@@ -141,8 +140,7 @@ export const candidatesTable = pgTable("candidates", {
   currentCompany: text("current_company"),
   summary: text("summary"),
   parsedResume: jsonb("parsed_resume"),
-  // NOTE: embedding vector(3072) added via raw SQL in apply-rls migration.
-  // Nullable + unindexed until Batch 3. TODO Batch 3: add to Drizzle schema.
+  // NOTE: embedding vector(1536) added via raw SQL in apply-rls migration.
   source: text("source"),
   lastActivityAt: timestamp("last_activity_at", { withTimezone: true }),
   doNotContact: boolean("do_not_contact").default(false),
@@ -153,36 +151,27 @@ export const applicationsTable = pgTable(
   "applications",
   {
     id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-    workspaceId: uuid("workspace_id")
-      .references(() => workspacesTable.id)
-      .notNull(),
-    candidateId: uuid("candidate_id")
-      .references(() => candidatesTable.id)
-      .notNull(),
-    jobId: uuid("job_id")
-      .references(() => jobsTable.id)
-      .notNull(),
-    stage: text("stage").default("applied"),
+    workspaceId: uuid("workspace_id").references(() => workspacesTable.id).notNull(),
+    candidateId: uuid("candidate_id").references(() => candidatesTable.id).notNull(),
+    jobId: uuid("job_id").references(() => jobsTable.id).notNull(),
+    stage: text("stage").default("applied").notNull(),
+    // Batch 4: gap-based position within stage (multiples of 1000; rebalance when gap < 100).
+    // Stage validation is app-layer against jobs.stages_json keys — no DB check constraint,
+    // allowing custom stage keys without migrations.
+    positionInStage: integer("position_in_stage").default(0).notNull(),
     source: text("source"),
     appliedAt: timestamp("applied_at", { withTimezone: true }).defaultNow(),
     lastActivityAt: timestamp("last_activity_at", { withTimezone: true }),
   },
   (table) => [
-    uniqueIndex("applications_candidate_job_idx").on(
-      table.candidateId,
-      table.jobId,
-    ),
+    uniqueIndex("applications_candidate_job_idx").on(table.candidateId, table.jobId),
   ],
 );
 
 export const resumesTable = pgTable("resumes", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  workspaceId: uuid("workspace_id")
-    .references(() => workspacesTable.id)
-    .notNull(),
-  candidateId: uuid("candidate_id")
-    .references(() => candidatesTable.id)
-    .notNull(),
+  workspaceId: uuid("workspace_id").references(() => workspacesTable.id).notNull(),
+  candidateId: uuid("candidate_id").references(() => candidatesTable.id).notNull(),
   fileUrl: text("file_url").notNull(),
   parsed: jsonb("parsed"),
   parserVersion: text("parser_version"),
@@ -191,12 +180,8 @@ export const resumesTable = pgTable("resumes", {
 
 export const activitiesTable = pgTable("activities", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  workspaceId: uuid("workspace_id")
-    .references(() => workspacesTable.id)
-    .notNull(),
-  candidateId: uuid("candidate_id")
-    .references(() => candidatesTable.id)
-    .notNull(),
+  workspaceId: uuid("workspace_id").references(() => workspacesTable.id).notNull(),
+  candidateId: uuid("candidate_id").references(() => candidatesTable.id).notNull(),
   userId: uuid("user_id").references(() => usersTable.id),
   type: text("type").notNull(),
   payload: jsonb("payload").default({}),
@@ -209,12 +194,8 @@ export const matchScoresTable = pgTable(
   "match_scores",
   {
     id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-    workspaceId: uuid("workspace_id")
-      .references(() => workspacesTable.id)
-      .notNull(),
-    applicationId: uuid("application_id")
-      .references(() => applicationsTable.id)
-      .notNull(),
+    workspaceId: uuid("workspace_id").references(() => workspacesTable.id).notNull(),
+    applicationId: uuid("application_id").references(() => applicationsTable.id).notNull(),
     score: integer("score").notNull(),
     breakdown: jsonb("breakdown").default(sql`'{}'::jsonb`),
     rationale: text("rationale"),
@@ -231,16 +212,54 @@ export const matchScoresTable = pgTable(
 
 export const fairnessAuditLogTable = pgTable("fairness_audit_log", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
-  workspaceId: uuid("workspace_id")
-    .references(() => workspacesTable.id)
-    .notNull(),
+  workspaceId: uuid("workspace_id").references(() => workspacesTable.id).notNull(),
   targetType: text("target_type").notNull(),
   targetId: uuid("target_id").notNull(),
   signalsStripped: jsonb("signals_stripped").default(sql`'[]'::jsonb`),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 });
 
-// ─── Types ────────────────────────────────────────────────────────
+// ─── Batch 4: Kanban support tables ──────────────────────────────
+
+/**
+ * Per-workspace rejection reasons shown in the bulk-reject modal.
+ * 7 default rows seeded by a DB trigger on workspace INSERT.
+ * Column `sort_order` avoids the SQL reserved word `order`.
+ */
+export const rejectionReasonsTable = pgTable("rejection_reasons", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  workspaceId: uuid("workspace_id").references(() => workspacesTable.id).notNull(),
+  label: text("label").notNull(),
+  sortOrder: integer("sort_order").default(0),
+  isDefault: boolean("is_default").default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+});
+
+/**
+ * Stage automation hooks — data model only; UI deferred to Phase 4.
+ * job_id nullable = workspace-wide rule.
+ * Inngest `stage.entered` handler is a stub (logs + writes activity).
+ */
+export const stageAutomationsTable = pgTable(
+  "stage_automations",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+    workspaceId: uuid("workspace_id").references(() => workspacesTable.id).notNull(),
+    jobId: uuid("job_id").references(() => jobsTable.id), // nullable = all jobs
+    stageKey: text("stage_key").notNull(),
+    actionType: text("action_type").notNull(),
+    actionPayload: jsonb("action_payload").default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (table) => [
+    check(
+      "stage_automations_action_type_check",
+      sql`${table.actionType} IN ('send_template_email','create_task','notify_recruiter')`,
+    ),
+  ],
+);
+
+// ─── Inferred types ───────────────────────────────────────────────
 export type Organization = typeof organizationsTable.$inferSelect;
 export type InsertOrganization = typeof organizationsTable.$inferInsert;
 export type Workspace = typeof workspacesTable.$inferSelect;
@@ -249,7 +268,6 @@ export type User = typeof usersTable.$inferSelect;
 export type InsertUser = typeof usersTable.$inferInsert;
 export type AuditLog = typeof auditLogsTable.$inferSelect;
 export type Invite = typeof invitesTable.$inferSelect;
-
 export type Client = typeof clientsTable.$inferSelect;
 export type InsertClient = typeof clientsTable.$inferInsert;
 export type Job = typeof jobsTable.$inferSelect;
@@ -263,3 +281,19 @@ export type Activity = typeof activitiesTable.$inferSelect;
 export type MatchScore = typeof matchScoresTable.$inferSelect;
 export type InsertMatchScore = typeof matchScoresTable.$inferInsert;
 export type FairnessAuditLog = typeof fairnessAuditLogTable.$inferSelect;
+export type RejectionReason = typeof rejectionReasonsTable.$inferSelect;
+export type StageAutomation = typeof stageAutomationsTable.$inferSelect;
+
+// Stage definition shape stored in jobs.stages_json
+export type StageDefinition = { key: string; label: string; order: number };
+
+export const DEFAULT_STAGE_DEFINITIONS: StageDefinition[] = [
+  { key: "sourced",   label: "Sourced",   order: 0 },
+  { key: "applied",   label: "Applied",   order: 1 },
+  { key: "screen",    label: "Screen",    order: 2 },
+  { key: "hm_round",  label: "HM Round",  order: 3 },
+  { key: "final",     label: "Final",     order: 4 },
+  { key: "offer",     label: "Offer",     order: 5 },
+  { key: "placed",    label: "Placed",    order: 6 },
+  { key: "rejected",  label: "Rejected",  order: 7 },
+];

@@ -175,13 +175,15 @@ describe("Public apply flow: end-to-end DB assertions", () => {
       c.release();
     }
 
-    // cleanup other tenant (FK safe — audit_logs trigger fires on workspace INSERT)
+    // cleanup other tenant (FK safe — delete kanban + leaf tables before workspace)
     const clean = await pool.connect();
     try {
-      await clean.query(`DELETE FROM users       WHERE workspace_id = $1`, [other.workspaceId]);
-      await clean.query(`DELETE FROM audit_logs  WHERE workspace_id = $1`, [other.workspaceId]);
-      await clean.query(`DELETE FROM workspaces  WHERE id = $1`, [other.workspaceId]);
-      await clean.query(`DELETE FROM organizations WHERE id = $1`, [other.orgId]);
+      await clean.query(`DELETE FROM stage_automations WHERE workspace_id = $1`, [other.workspaceId]);
+      await clean.query(`DELETE FROM rejection_reasons  WHERE workspace_id = $1`, [other.workspaceId]);
+      await clean.query(`DELETE FROM users              WHERE workspace_id = $1`, [other.workspaceId]);
+      await clean.query(`DELETE FROM audit_logs         WHERE workspace_id = $1`, [other.workspaceId]);
+      await clean.query(`DELETE FROM workspaces         WHERE id = $1`, [other.workspaceId]);
+      await clean.query(`DELETE FROM organizations      WHERE id = $1`, [other.orgId]);
     } finally {
       clean.release();
     }

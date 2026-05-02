@@ -1,0 +1,89 @@
+PHASE 3 · BATCH 4 — KANBAN PIPELINE + STAGE TRANSITIONS + LIVE UPDATES · NUATIS RECRUIT
+
+CONTEXT
+Batches 2, 3, 3.5 shipped: core objects under RLS, public apply flow, AI service stub pipeline, Inngest events firing end-to-end with match scores landing in 1.3s. Now adding the recruiter's primary daily-use surface: a kanban board on each job's detail page where candidates flow through stages. This is where recruiters live. Get this right and the demo story becomes "post job → apply → match score → drag to interview → drag to offer" instead of just "post job → apply → number appears."
+
+GOAL
+On /jobs/[id], a recruiter sees applicants laid out in a kanban with default stages (Sourced, Applied, Screen, HM Round, Final, Offer, Placed, Rejected). They drag a candidate from Applied to Screen, the move persists to DB instantly via optimistic UI, the activity is logged, and a second recruiter on the same job sees the move within 2 seconds.
+
+SCOPE — BUILD / DO THIS
+
+1. Schema additions in packages/db (one migration):
+   - Add jobs.stages_json jsonb DEFAULT '[{"key":"sourced","label":"Sourced","order":0},{"key":"applied","label":"Applied","order":1},{"key":"screen","label":"Screen","order":2},{"key":"hm_round","label":"HM Round","order":3},{"key":"final","label":"Final","order":4},{"key":"offer","label":"Offer","order":5},{"key":"placed","label":"Placed","order":6},{"key":"rejected","label":"Rejected","order":7}]'::jsonb NOT NULL.
+   - Existing applications.stage column: change default to 'applied' if not already; expand the check constraint or drop it in favor of validating against jobs.stages_json keys at the application layer (your call — document choice).
+   - Add applications.position_in_stage int default 0 (for ordering within a stage column).
+   - Add rejection_reasons table (id uuid pk, workspace_id uuid fk, label text, order int, is_default bool default false). Seed defaults per workspace on create: 'Not enough experience', 'Skills mismatch', 'Salary expectations', 'Location/remote', 'Lost to other offer', 'Withdrew', 'Other'.
+   - RLS on rejection_reasons follows the standard NULLIF pattern.
+
+2. Kanban UI on /jobs/[id] using dnd-kit:
+   - Replace the current Applicants list with a horizontally scrolling kanban. Columns from jobs.stages_json in order. Each column shows count + collapsed/expanded toggle.
+   - Candidate cards show: name, current_title, match-score badge (existing), source, days-in-stage. Card click opens a Sheet with the candidate detail summary (or routes to /candidates/[id] — your call).
+   - Drag-and-drop between stages. Optimistic UI: card moves immediately on drop; tRPC-or-fetch mutation fires; on error, card rolls back with an error toast ("Couldn't save move — try again").
+   - Drag-and-drop within a stage (reorder) updates position_in_stage on affected rows. Use the gap-rebalancing pattern (positions in increments of 1000, rebalance when gaps shrink) so single moves don't rewrite every row.
+   - View mode toggle in the page header: Kanban (default), Table (sortable list), Compact (one-line per applicant). State persists in URL params (?view=kanban|table|compact).
+
+3. Stage transition mechanics:
+   - On every successful stage move:
+     a. UPDATE applications SET stage = new_stage, last_activity_at = now() (within tx).
+     b. INSERT activities row with type='application.stage_change' and payload = {from_stage, to_stage, by_user_id}.
+     c. withAudit logs application.stage_change with diff_json showing before/after.
+   - All three writes in the same transaction. If any fail, all roll back, UI rolls back optimistic move.
+
+4. Bulk operations:
+   - Shift-click on cards selects a range. Cmd/Ctrl-click toggles individual selection.
+   - Selected cards show a sticky action bar at the bottom of the kanban: "Move to…" (stage picker), "Reject…" (opens reject modal), "Clear selection".
+   - Bulk move: applies the same stage update to all selected, in a single transaction, with one audit row per application.
+   - Bulk reject: reject modal with a reason picker (loaded from rejection_reasons for this workspace) + an optional template-email checkbox (template stub for now — actual email send is Phase 4). On confirm: stage='rejected', activities row, audit row, per application.
+
+5. Real-time updates (this is the "second recruiter sees within 2s" requirement):
+   - Postgres LISTEN/NOTIFY: a trigger on applications fires NOTIFY 'applications_changed' with payload {workspace_id, application_id, action} on INSERT, UPDATE of (stage, position_in_stage), DELETE.
+   - Express API exposes GET /api/jobs/:id/stream as SSE. The handler subscribes to NOTIFY for that workspace, filters events to the requested job_id, pushes JSON.stringified events.
+   - apps/web subscribes via EventSource on the kanban page. On each event, invalidate the relevant TanStack Query so the affected card re-renders.
+   - The current 3s poll for match-score badge stays — do not remove it. SSE is for stage moves only in this batch. (Match-score live update via SSE comes later if needed.)
+   - Connection management: SSE auto-reconnects with exponential backoff on disconnect. Add a small UI indicator (dot in the header) showing "Live" / "Reconnecting…" / "Offline".
+
+6. Per-stage automation hook (data model + simple trigger only at v1):
+   - Add stage_automations table (id uuid pk, workspace_id uuid fk, job_id uuid fk NULL, stage_key text, action_type text check in ('send_template_email','create_task','notify_recruiter'), action_payload jsonb).
+   - When an application enters a stage with a matching automation row, fire an inngest event 'stage.entered' with the automation IDs that match. The Inngest handler is a STUB that logs "Would execute automation X" and writes to activities — do NOT actually send emails or create tasks (Phase 4). RLS on stage_automations.
+   - UI for managing automations: deferred to Phase 4 — no UI in this batch. Just the data path.
+
+7. Tests:
+   - tests/kanban/stage-transitions.test.ts — programmatic moves, asserts applications.stage updated + activities row + audit_logs row, all atomic.
+   - tests/kanban/bulk-operations.test.ts — bulk move 3 applications + bulk reject 2, assert correct rows + correct audit count.
+   - tests/realtime/sse-stage-updates.test.ts — open SSE connection, perform stage move from another connection, assert the SSE client receives the event within 2s.
+   - tests/kanban/rejection-flow.test.ts — reject with reason + optional email template, asserts stage + reason persisted + activities + audit.
+   - All previous tests still pass (currently 41/41).
+
+SCOPE — DO NOT BUILD
+- UI for managing stage_automations (Phase 4)
+- Actual email send on automation trigger (Phase 4)
+- Customizable kanban stages per workspace (UI deferred — schema supports it via jobs.stages_json, that's enough)
+- Real-time match-score badge updates via SSE (current poll is fine)
+- Notes / @mentions / tasks (Batch 5)
+- Hybrid search bar (Batch 5)
+- Candidate dedup beyond email exact match (Batch 5)
+- Real LLM prompts (ML engineer)
+- Email / SMS / voice (Phase 4)
+- Per-recruiter inbox view at /tasks (Batch 5)
+
+TECH CONSTRAINTS
+- dnd-kit (the existing-stack choice) — not react-dnd, not react-beautiful-dnd.
+- Optimistic UI uses TanStack Query's useMutation onMutate / onError rollback pattern.
+- Position rebalancing: when consecutive position values differ by less than 100, rebalance the entire stage to multiples of 1000 in one transaction.
+- SSE events are SCOPED PER WORKSPACE. The NOTIFY payload includes workspace_id; the SSE handler MUST verify the requesting user's workspace_id matches before forwarding the event. Cross-workspace event leakage is a security regression.
+- Trigger function uses pg_notify with a JSON payload, not a comma-separated string. Receiver parses with JSON.parse.
+- All stage moves go through the single mutation endpoint POST /api/applications/:id/move (or PATCH /api/applications/:id with {stage, position_in_stage} — your call). Never write to applications.stage directly from any other path.
+- Audit action key: application.stage_change (consistent with Batch 2 naming).
+- The "days-in-stage" badge on cards reads from the most recent stage_change activity row, not from applications.last_activity_at (which can be moved by other events).
+
+ACCEPTANCE — REPORT FORMAT
+Same single block at the end:
+
+SUMMARY — 4 to 6 bullets
+ERRORS — every test failure, every non-zero exit, every TS error, verbatim
+ACCEPTANCE STATUS — items 1 through 7: PASS / FAIL / UNKNOWN with one-sentence reason. Include test count summary and the SSE latency you measured (e.g., "second client received stage update at t=1.4s after first client's drop").
+SKIPPED — anything deferred and why
+OPEN QUESTIONS — anything you need a human to decide
+
+HARD STOP
+Stop after item 7 and the report. Do not begin Batch 5 (notes / search). Do not write real LLM prompts. Do not build automation execution beyond the stub. Wait for next prompt.

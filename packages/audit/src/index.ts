@@ -29,7 +29,9 @@ export type AuditAction =
   | "job.publish"
   | "candidate.create"
   | "candidate.update"
-  | "application.create";
+  | "application.create"
+  | "application.stage_change"
+  | "application.reject";
 
 export type AuditParams = {
   workspaceId: string;

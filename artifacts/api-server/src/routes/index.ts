@@ -8,8 +8,18 @@ import candidatesRouter from "./candidates";
 import applicationsRouter from "./applications";
 import publicRouter from "./public";
 import matchScoresRouter from "./match-scores";
+import rejectionReasonsRouter from "./rejection-reasons";
+import sseRouter from "./sse";
 import { inngestHandler } from "./inngest-serve";
 import { inngest } from "../lib/inngest";
+import { db, usersTable } from "@workspace/db";
+import { eq } from "drizzle-orm";
+import {
+  createSession,
+  SESSION_COOKIE,
+  SESSION_TTL,
+  type SessionData,
+} from "../lib/auth";
 
 const router: IRouter = Router();
 
@@ -22,12 +32,13 @@ router.use(candidatesRouter);
 router.use(applicationsRouter);
 router.use(publicRouter);
 router.use(matchScoresRouter);
+router.use(rejectionReasonsRouter);
+router.use(sseRouter);
 
-// Inngest serve endpoint — Inngest dev server / cloud polls this to discover functions
+// Inngest serve endpoint
 router.use("/inngest", inngestHandler);
 
-// Dev-only: fire an Inngest event via SDK (used by E2E tests to seed events
-// for jobs seeded directly in the DB rather than through the API route)
+// Dev-only: fire an Inngest event via SDK (used by E2E tests)
 if (process.env.NODE_ENV !== "production") {
   router.post("/_test/inngest-send", async (req, res) => {
     try {
@@ -38,6 +49,58 @@ if (process.env.NODE_ENV !== "production") {
       }
       await inngest.send({ name, data: data ?? {} });
       res.json({ ok: true, event: name });
+    } catch (err) {
+      res.status(500).json({ error: String(err) });
+    }
+  });
+
+  // Dev-only: create a test session cookie for a given workspaceId + userId
+  // Used by kanban integration tests to authenticate without real OIDC flow.
+  router.post("/_test/session", async (req, res) => {
+    try {
+      const { workspaceId, userId } = req.body as {
+        workspaceId?: string;
+        userId?: string;
+      };
+      if (!workspaceId || !userId) {
+        res.status(400).json({ error: "workspaceId and userId are required" });
+        return;
+      }
+
+      const [user] = await db
+        .select()
+        .from(usersTable)
+        .where(eq(usersTable.id, userId));
+
+      if (!user) {
+        res.status(404).json({ error: "User not found" });
+        return;
+      }
+
+      const sessionData: SessionData = {
+        user: {
+          id: user.id,
+          email: user.email,
+          firstName: null,
+          lastName: null,
+          profileImageUrl: null,
+          workspaceId: user.workspaceId ?? workspaceId,
+          role: user.role ?? "recruiter",
+        },
+        access_token: "test-token",
+        refresh_token: undefined,
+        expires_at: Math.floor(Date.now() / 1000) + 3600,
+      };
+
+      const sid = await createSession(sessionData);
+      res.cookie(SESSION_COOKIE, sid, {
+        httpOnly: true,
+        secure: false,
+        sameSite: "lax",
+        path: "/",
+        maxAge: SESSION_TTL,
+      });
+      res.json({ ok: true, sid });
     } catch (err) {
       res.status(500).json({ error: String(err) });
     }
