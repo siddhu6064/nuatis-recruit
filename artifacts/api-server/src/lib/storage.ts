@@ -14,7 +14,14 @@
 import { Client as ObjectStorageClient } from "@replit/object-storage";
 import { logger } from "./logger";
 
-const storageClient = new ObjectStorageClient();
+let _storageClient: ObjectStorageClient | null = null;
+
+function getStorageClient(): ObjectStorageClient {
+  if (!_storageClient) {
+    _storageClient = new ObjectStorageClient();
+  }
+  return _storageClient;
+}
 
 function buildObjectPath(workspaceId: string, filename: string): string {
   const dir = process.env.PRIVATE_OBJECT_DIR ?? "private";
@@ -35,7 +42,7 @@ export async function uploadResume(
 
   logger.info({ objectPath, mimeType, bytes: buffer.byteLength }, "Uploading resume");
 
-  const result = await storageClient.uploadFromBytes(objectPath, buffer);
+  const result = await getStorageClient().uploadFromBytes(objectPath, buffer);
 
   if (!result.ok) {
     throw new Error(`Object storage upload failed: ${result.error?.message ?? "unknown"}`);
@@ -50,7 +57,7 @@ export async function uploadResume(
  * The URL expires after 60 seconds.
  */
 export async function getResumeSignedUrl(objectPath: string): Promise<string> {
-  const result = await storageClient.downloadAsText(objectPath);
+  const result = await getStorageClient().downloadAsText(objectPath);
   if (!result.ok) {
     throw new Error(`Failed to verify object exists: ${result.error?.message ?? "unknown"}`);
   }
@@ -65,7 +72,7 @@ export async function getResumeSignedUrl(objectPath: string): Promise<string> {
  * Download a resume buffer from object storage.
  */
 export async function downloadResume(objectPath: string): Promise<Buffer> {
-  const result = await storageClient.downloadAsBytes(objectPath);
+  const result = await getStorageClient().downloadAsBytes(objectPath);
   if (!result.ok) {
     throw new Error(`Object storage download failed: ${result.error?.message ?? "unknown"}`);
   }

@@ -11,6 +11,8 @@ import {
   uuid,
 } from "drizzle-orm/pg-core";
 
+// ─── Batch 3: AI / match score tables ────────────────────────────
+
 export const organizationsTable = pgTable("organizations", {
   id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
   name: text("name").notNull(),
@@ -109,8 +111,8 @@ export const jobsTable = pgTable(
     status: text("status").default("draft").notNull(),
     slug: text("slug").notNull(),
     customFields: jsonb("custom_fields").default({}),
-    // NOTE: embedding vector(3072) added via raw SQL in apply-rls migration.
-    // Nullable + unindexed until Batch 3. TODO Batch 3: add to Drizzle schema.
+    parsedJd: jsonb("parsed_jd"),
+    // NOTE: embedding vector(3072) added via raw SQL in apply-rls migration (pgvector extension).
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
   },
   (table) => [
@@ -201,6 +203,43 @@ export const activitiesTable = pgTable("activities", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 });
 
+// ─── Batch 3 AI tables ────────────────────────────────────────────
+
+export const matchScoresTable = pgTable(
+  "match_scores",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+    workspaceId: uuid("workspace_id")
+      .references(() => workspacesTable.id)
+      .notNull(),
+    applicationId: uuid("application_id")
+      .references(() => applicationsTable.id)
+      .notNull(),
+    score: integer("score").notNull(),
+    breakdown: jsonb("breakdown").default(sql`'{}'::jsonb`),
+    rationale: text("rationale"),
+    evidenceQuotes: jsonb("evidence_quotes").default(sql`'[]'::jsonb`),
+    modelVersion: text("model_version"),
+    promptVersion: text("prompt_version"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("match_scores_application_id_idx").on(table.applicationId),
+    check("match_scores_score_range", sql`${table.score} >= 0 AND ${table.score} <= 100`),
+  ],
+);
+
+export const fairnessAuditLogTable = pgTable("fairness_audit_log", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  workspaceId: uuid("workspace_id")
+    .references(() => workspacesTable.id)
+    .notNull(),
+  targetType: text("target_type").notNull(),
+  targetId: uuid("target_id").notNull(),
+  signalsStripped: jsonb("signals_stripped").default(sql`'[]'::jsonb`),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+});
+
 // ─── Types ────────────────────────────────────────────────────────
 export type Organization = typeof organizationsTable.$inferSelect;
 export type InsertOrganization = typeof organizationsTable.$inferInsert;
@@ -221,3 +260,6 @@ export type Application = typeof applicationsTable.$inferSelect;
 export type InsertApplication = typeof applicationsTable.$inferInsert;
 export type Resume = typeof resumesTable.$inferSelect;
 export type Activity = typeof activitiesTable.$inferSelect;
+export type MatchScore = typeof matchScoresTable.$inferSelect;
+export type InsertMatchScore = typeof matchScoresTable.$inferInsert;
+export type FairnessAuditLog = typeof fairnessAuditLogTable.$inferSelect;

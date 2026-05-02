@@ -1,0 +1,110 @@
+PHASE 3 · BATCH 3 — AI SERVICE SCAFFOLDING (PROMPTS STUBBED FOR ML ENGINEER) · NUATIS RECRUIT
+
+CONTEXT
+Batch 2 shipped: 6 core tables (clients, jobs, candidates, applications, resumes, activities) under RLS, recruiter UI, public apply flow, magic-byte file validation, 20/20 tests passing. Now scaffolding the AI service surface so a human ML engineer can drop in the actual Claude prompts. This batch builds INFRASTRUCTURE ONLY for AI parsing and match scoring. The actual Claude prompts are STUBBED. The deterministic scoring math (skills overlap, experience years) is OK to write. The judgment calls (what makes a good resume parse, what counts as a protected-class signal, the rationale prose) are NOT.
+
+GOAL
+A recruiter creates a job and an applicant applies; within ~30 seconds, a match score appears on the application card. The match score comes from real DB writes through real Inngest jobs through real FastAPI endpoints — but the LLM call inside each endpoint returns stubbed data so the wiring is testable end-to-end without spending tokens.
+
+SCOPE — BUILD / DO THIS
+
+1. Drizzle schema additions in packages/db (one migration):
+   - match_scores (id uuid pk, workspace_id uuid fk, application_id uuid fk → applications, score int check (score >= 0 AND score <= 100), breakdown jsonb default '{}'::jsonb, rationale text, evidence_quotes jsonb default '[]'::jsonb, model_version text, prompt_version text, created_at timestamptz default now(), unique(application_id))
+   - fairness_audit_log (id uuid pk, workspace_id uuid fk, target_type text, target_id uuid, signals_stripped jsonb default '[]'::jsonb, created_at timestamptz default now()) — RLS enabled, follows same isolation pattern.
+   - Add HNSW index on candidates.embedding (vector_cosine_ops, m=16, ef_construction=64).
+   - Add HNSW index on jobs.embedding (same params).
+   - Both indexes are partial: WHERE embedding IS NOT NULL.
+   - RLS policies for both new tables follow the standard pattern (NULLIF empty-string guard).
+
+2. FastAPI service (apps/ai) — endpoint scaffolds with Pydantic v2 schemas:
+
+   - ParsedResume schema: name (str), contact_email (str | None), contact_phone (str | None), location (str | None), summary (str | None), work_history (list[WorkHistoryItem]), education (list[EducationItem]), skills (list[str]), links (list[str]). Include per-field confidence (0-1 float).
+   - ParsedJD schema: required_skills (list[str]), nice_to_have_skills (list[str]), seniority_level (Literal['junior','mid','senior','staff','principal','exec']), key_responsibilities (list[str]), must_haves (list[str]), protected_class_flags (list[FlaggedTerm]) — empty list in stub.
+   - WorkHistoryItem: title, company, start_date, end_date | None, description, current (bool).
+   - EducationItem: institution, degree, field, year | None.
+
+   - POST /parse/resume — accepts {file_url}. Downloads file (R2 / Replit Object Storage / HTTPS — auto-detect). Extracts text via PyPDF + python-docx + a stub OCR fallback (call returns "OCR_NOT_IMPLEMENTED" with a clear log warning if the PDF is image-based). Returns a ParsedResume with HARDCODED MOCK DATA (use the candidate's filename as a hint — e.g., if filename contains "senior", set seniority_level='senior'; otherwise sensible defaults). At the call site to Claude: STUBBED — replace with actual Anthropic SDK call. The model_version field should default to 'claude-sonnet-4-7-stub' so we can later filter for un-reparsed records. Add comment: # TODO: human ML engineer owns this prompt — see packages/ai-prompts/resume-parser.md (placeholder file).
+   - POST /parse/jd — accepts {job_id, description}. Returns ParsedJD with mock data based on simple heuristics (regex for common skills like 'Python', 'React'; word-count for seniority guess). Same TODO comment for the LLM call.
+   - POST /embed — accepts {text}. STUB: returns a deterministic-but-fake 3072-dim vector seeded by hash(text) so identical text → identical vector, but the values are not real embeddings. Add # TODO: replace with OpenAI text-embedding-3-large. Same model_version pattern.
+   - POST /match — accepts {resume_id, job_id}. Loads parsed_resume + parsed_jd + embeddings from DB. Computes a DETERMINISTIC score (this part is real, no LLM):
+       skills_score = |required_skills ∩ candidate_skills| / |required_skills| × 100, weighted 40%
+       experience_score = clamp(0, 100, ...years-of-experience matching logic — write straightforward code...), weighted 30%
+       seniority_score = exact_match ? 100 : adjacent ? 60 : 30, weighted 20%
+       location_score = same_metro ? 100 : remote_ok ? 80 : 40, weighted 10%
+       total = sum of weighted scores
+     The RATIONALE field returns stub text "Match rationale stub — ML engineer owns the prompt". evidence_quotes returns []. Add # TODO: human ML engineer owns rationale generation prompt.
+   - All endpoints validate request via Pydantic, return Pydantic via FastAPI auto-serialization, and log structured JSON (request_id, endpoint, latency_ms, status).
+   - Anthropic SDK + OpenAI SDK installed but NOT called from inside endpoints — only imported. ANTHROPIC_API_KEY and OPENAI_API_KEY env vars wired but optional (service starts without them; only the actual LLM call sites would fail, and those are stubs).
+
+3. packages/ai-prompts directory created with placeholder markdown files:
+   - resume-parser.md: "# Resume Parser Prompt\n\nTODO: human ML engineer owns this. See PRD section on resume parsing for output schema and edge cases (multi-column layouts, non-English names, scanned PDFs)."
+   - jd-parser.md: similar
+   - match-rationale.md: similar
+   - Each file is version-tagged in its filename header (e.g., `version: 0.0.0-stub`).
+
+4. Inngest setup (Inngest dev server in the Repl, persistent workflow):
+   - Install inngest + @inngest/express. Register dev server.
+   - Three jobs wired:
+     a. event 'resume.uploaded' → calls POST http://apps-ai/parse/resume → calls POST http://apps-ai/embed → UPDATE candidates SET parsed_resume = $1, embedding = $2 WHERE id = $candidate_id
+     b. event 'job.created' (also fires on update if description changed) → POST /parse/jd → /embed → UPDATE jobs SET parsed_jd, embedding
+     c. event 'application.created' → POST /match → INSERT INTO match_scores ON CONFLICT (application_id) DO UPDATE
+   - Wire the event triggers: existing route handlers for resume upload, job creation, application creation must inngest.send() the corresponding event AFTER the DB write commits (do NOT block the HTTP response on the AI work).
+   - Inngest job failures retry 3x with exponential backoff. Final failure logs to Sentry (or console with [SENTRY] prefix if Sentry not yet set up — leave a TODO marker).
+
+5. UI in apps/web — match-score badges:
+   - On the Applicants list inside /jobs/[id]: each row shows a colored badge with the score number. Green ≥75, yellow 50–74, red <50, gray "—" if no score yet (Inngest job hasn't completed or failed).
+   - On the candidate detail page Applications tab: same badge per application.
+   - Hover badge → shadcn Tooltip showing the breakdown (skills 32/40, experience 24/30, seniority 18/20, location 8/10 — pull from match_scores.breakdown).
+   - Click badge → side panel (shadcn Sheet) showing the rationale text + evidence_quotes list. Both will display the stub text until the ML engineer wires the real prompts; that's fine.
+   - Live update: the Applicants list polls or subscribes (your call — SSE if simple, polling-every-3s if simpler) to refresh scores when match_scores rows are written. Don't build full Postgres LISTEN/NOTIFY plumbing yet — that's Batch 4.
+
+6. Eval harness folder structure (empty but committed):
+   - evals/resume-parser/ with README.md describing expected format: 50 sample resumes/, expected/, runner.py — no test cases yet, just the structure
+   - evals/match-scoring/ with same skeleton: 30 (resume, JD, expected_band) tuples, runner.py
+   - evals/.gitkeep so the folders are tracked
+   - These are NOT wired into CI yet. Add a comment in each runner.py: # TODO: ML engineer fills in cases; CI integration in Phase 6.
+
+7. Bias audit stub:
+   - In apps/ai, add strip_protected_signals(text: str) -> tuple[str, list[str]] — STUB returns (text, []). Add # TODO: human ML engineer / legal review owns the protected-class taxonomy.
+   - Wire it into /parse/resume and /match before the LLM call site (which is itself a stub) so the integration point exists.
+   - Every call to strip_protected_signals that returns a non-empty list inserts a fairness_audit_log row.
+
+8. Tests:
+   - tests/ai-pipeline/parse-stub.test.ts — POST a fake resume URL to /parse/resume, assert mock ParsedResume returned with all schema fields populated.
+   - tests/ai-pipeline/match-flow.test.ts — create candidate + job + application via API, wait for Inngest to process (poll match_scores for up to 30s), assert match_scores row exists with score in [0,100], breakdown has 4 keys, model_version='claude-sonnet-4-7-stub'.
+   - Extend RLS test suite for match_scores and fairness_audit_log (cross-workspace isolation).
+   - All previous tests still pass.
+
+SCOPE — DO NOT BUILD
+- Real Claude prompts for resume parsing, JD parsing, or match rationale (ML engineer owns these — files placeholdered in packages/ai-prompts/)
+- Real OpenAI embedding calls (replace the deterministic-fake-vector stub when ML engineer is ready)
+- Real bias audit logic / protected-class taxonomy (legal + ML engineer territory)
+- Postgres LISTEN/NOTIFY real-time pipeline (Batch 4 with kanban)
+- Pipeline / kanban view (Batch 4)
+- Hybrid search bar (Phase 3 Week 6 — Batch 5)
+- Notes, @mentions, tasks, dedup beyond email-exact-match (Batch 5)
+- Email / SMS / voice features (Phase 4)
+- Portkey gateway (defer until ML engineer wires real LLM calls; for now if a real API key exists, hit Anthropic / OpenAI directly with a TODO marker for Portkey routing)
+- Sentry full setup (just leave the [SENTRY] log markers)
+- Resume re-parse trigger on prompt/model version updates (mentioned in Doc 08 Week 4, deferred until prompts exist to version)
+
+TECH CONSTRAINTS
+- FastAPI service must remain on port 9000 with persistent workflow. Do not break what Batch 1B fixed.
+- Pydantic v2 only (model_validate, model_dump, not the v1 .dict()/.parse_obj()).
+- All Inngest events fire AFTER DB commit, never before.
+- match_scores has a unique constraint on application_id — re-runs upsert, do not create duplicate rows.
+- HNSW index params: m=16, ef_construction=64. Partial index ONLY where embedding IS NOT NULL (avoids wasted space + index errors on null).
+- The deterministic-fake-embedding stub MUST be deterministic — same text in produces same vector out — so cached match_scores remain stable across re-runs during testing.
+- Stub model_version strings must contain the substring 'stub' so a future re-parse job can target them via `WHERE model_version LIKE '%stub%'`.
+
+ACCEPTANCE — REPORT FORMAT
+Same single block at the end:
+
+SUMMARY — 4 to 6 bullets
+ERRORS — every test failure, every non-zero exit, every TS error, verbatim
+ACCEPTANCE STATUS — items 1 through 8: PASS / FAIL / UNKNOWN with one-sentence reason. Include test count summary.
+SKIPPED — anything deferred and why
+OPEN QUESTIONS — anything you need a human to decide
+
+HARD STOP
+Stop after item 8 and the report. Do not write actual Claude prompts. Do not call out to Anthropic or OpenAI APIs from inside the stubbed endpoints. Do not begin Batch 4 (kanban / pipeline). Wait for next prompt.

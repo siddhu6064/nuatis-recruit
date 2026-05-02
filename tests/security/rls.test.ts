@@ -28,6 +28,10 @@ let applicationBId: string;
 let resumeBId: string;
 let activityBId: string;
 
+// Batch 3 IDs
+let matchScoreBId: string;
+let fairnessLogBId: string;
+
 beforeAll(async () => {
   await cleanTestData(PREFIX);
   tenantA = await createTestTenant(PREFIX, "a");
@@ -81,15 +85,33 @@ beforeAll(async () => {
       [tenantB.workspaceId, candidateBId, "test.activity"],
     );
     activityBId = actRes.rows[0].id as string;
+
+    // match_score (Batch 3)
+    const msRes = await c.query(
+      `INSERT INTO match_scores (workspace_id, application_id, score, model_version)
+       VALUES ($1, $2, 75, 'claude-sonnet-4-7-stub') RETURNING id`,
+      [tenantB.workspaceId, applicationBId],
+    );
+    matchScoreBId = msRes.rows[0].id as string;
+
+    // fairness_audit_log (Batch 3)
+    const falRes = await c.query(
+      `INSERT INTO fairness_audit_log (workspace_id, target_type, target_id)
+       VALUES ($1, 'resume', $2) RETURNING id`,
+      [tenantB.workspaceId, candidateBId],
+    );
+    fairnessLogBId = falRes.rows[0].id as string;
   } finally {
     c.release();
   }
 });
 
 afterAll(async () => {
-  // Clean up Batch 2 rows first (FK-safe order)
+  // Clean up in FK-safe order (Batch 3 first, then Batch 2)
   const c = await pool.connect();
   try {
+    if (matchScoreBId) await c.query(`DELETE FROM match_scores WHERE id = $1`, [matchScoreBId]);
+    if (fairnessLogBId) await c.query(`DELETE FROM fairness_audit_log WHERE id = $1`, [fairnessLogBId]);
     if (activityBId) await c.query(`DELETE FROM activities WHERE id = $1`, [activityBId]);
     if (resumeBId) await c.query(`DELETE FROM resumes WHERE id = $1`, [resumeBId]);
     if (applicationBId) await c.query(`DELETE FROM applications WHERE id = $1`, [applicationBId]);
@@ -249,5 +271,90 @@ describe("RLS: cross-workspace isolation on `activities` table", () => {
   it("workspace A cannot read activities belonging to workspace B", async () => {
     const count = await assertIsolated("activities", "id", activityBId, tenantA.workspaceId);
     expect(count).toBe(0);
+  });
+});
+
+// ── Batch 3 tables ──────────────────────────────────────────────────────────
+
+describe("RLS: cross-workspace isolation on `match_scores` table", () => {
+  it("workspace A cannot read match_scores belonging to workspace B", async () => {
+    const count = await assertIsolated("match_scores", "id", matchScoreBId, tenantA.workspaceId);
+    expect(count).toBe(0);
+  });
+
+  it("workspace B can read its own match_scores when context is bound", async () => {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT set_config('app.current_workspace_id', $1, true)",
+        [tenantB.workspaceId],
+      );
+      const res = await client.query(
+        "SELECT id FROM match_scores WHERE workspace_id = $1",
+        [tenantB.workspaceId],
+      );
+      await client.query("ROLLBACK");
+      expect(res.rows.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      client.release();
+    }
+  });
+
+  it("match_scores.score is constrained to [0, 100]", async () => {
+    const client = await pool.connect();
+    try {
+      await expect(
+        client.query(
+          `INSERT INTO match_scores (workspace_id, application_id, score, model_version)
+           VALUES ($1, $2, 150, 'stub')`,
+          [tenantB.workspaceId, applicationBId],
+        ),
+      ).rejects.toThrow();
+    } finally {
+      client.release();
+    }
+  });
+
+  it("match_scores has unique constraint on application_id (upsert works)", async () => {
+    const client = await pool.connect();
+    try {
+      // Insert a second score for the same application — should fail without ON CONFLICT
+      await expect(
+        client.query(
+          `INSERT INTO match_scores (workspace_id, application_id, score, model_version)
+           VALUES ($1, $2, 60, 'stub')`,
+          [tenantB.workspaceId, applicationBId],
+        ),
+      ).rejects.toThrow();
+    } finally {
+      client.release();
+    }
+  });
+});
+
+describe("RLS: cross-workspace isolation on `fairness_audit_log` table", () => {
+  it("workspace A cannot read fairness_audit_log belonging to workspace B", async () => {
+    const count = await assertIsolated("fairness_audit_log", "id", fairnessLogBId, tenantA.workspaceId);
+    expect(count).toBe(0);
+  });
+
+  it("workspace B can read its own fairness_audit_log when context is bound", async () => {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(
+        "SELECT set_config('app.current_workspace_id', $1, true)",
+        [tenantB.workspaceId],
+      );
+      const res = await client.query(
+        "SELECT id FROM fairness_audit_log WHERE workspace_id = $1",
+        [tenantB.workspaceId],
+      );
+      await client.query("ROLLBACK");
+      expect(res.rows.length).toBeGreaterThanOrEqual(1);
+    } finally {
+      client.release();
+    }
   });
 });

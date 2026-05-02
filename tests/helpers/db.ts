@@ -66,22 +66,21 @@ export async function cleanTestData(prefix: string) {
     );
     const wsIds = wsResult.rows.map((r: { id: string }) => r.id);
     if (wsIds.length) {
-      await client.query(
-        `DELETE FROM users WHERE workspace_id = ANY($1::uuid[])`,
-        [wsIds],
-      );
-      await client.query(
-        `DELETE FROM invites WHERE workspace_id = ANY($1::uuid[])`,
-        [wsIds],
-      );
-      await client.query(
-        `DELETE FROM audit_logs WHERE workspace_id = ANY($1::uuid[])`,
-        [wsIds],
-      );
-      await client.query(
-        `DELETE FROM workspaces WHERE id = ANY($1::uuid[])`,
-        [wsIds],
-      );
+      // Batch 3: delete leaf tables first (FK deps on applications/candidates/jobs)
+      await client.query(`DELETE FROM match_scores WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);
+      await client.query(`DELETE FROM fairness_audit_log WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);
+      // Batch 2: delete in FK-safe order
+      await client.query(`DELETE FROM activities WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);
+      await client.query(`DELETE FROM resumes WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);
+      await client.query(`DELETE FROM applications WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);
+      await client.query(`DELETE FROM candidates WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);
+      await client.query(`DELETE FROM jobs WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);
+      await client.query(`DELETE FROM clients WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);
+      // Batch 1
+      await client.query(`DELETE FROM users WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);
+      await client.query(`DELETE FROM invites WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);
+      await client.query(`DELETE FROM audit_logs WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);
+      await client.query(`DELETE FROM workspaces WHERE id = ANY($1::uuid[])`, [wsIds]);
     }
     await client.query(
       `DELETE FROM organizations WHERE slug LIKE $1`,

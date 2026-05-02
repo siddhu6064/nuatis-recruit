@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@google-cloud/storage": "^7.19.0",
     "@replit/object-storage": "^1.0.0",
     "@workspace/api-zod": "workspace:*",
     "@workspace/audit": "workspace:*",
@@ -20,12 +21,14 @@
     "drizzle-orm": "catalog:",
     "express": "^5",
     "express-rate-limit": "^8.4.1",
+    "inngest": "^4.2.6",
     "multer": "^2.1.1",
     "openid-client": "^6.1.7",
     "pino": "^9",
     "pino-http": "^10"
   },
   "devDependencies": {
+    "@opentelemetry/api": "^1.9.1",
     "@types/cookie-parser": "^1.4.10",
     "@types/cors": "^2.8.19",
     "@types/express": "^5.0.6",

@@ -5,6 +5,8 @@ import { requireAuth } from "@workspace/auth";
 import { withAudit } from "@workspace/audit";
 import { applicationsTable } from "@workspace/db";
 import { generateJobSlug } from "../lib/slug";
+import { inngest } from "../lib/inngest";
+import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
 
@@ -72,6 +74,20 @@ router.post("/jobs", async (req: Request, res: Response) => {
         })
         .returning(),
   );
+
+  // Fire job.created AFTER DB commit so Inngest has the committed row
+  void inngest
+    .send({
+      name: "job.created",
+      data: {
+        jobId: job.id,
+        workspaceId: user.workspaceId,
+        description: String(description ?? ""),
+      },
+    })
+    .catch((e: unknown) =>
+      logger.warn({ err: e, jobId: job.id }, "Inngest job.created send failed"),
+    );
 
   res.status(201).json({ ...job, createdAt: job.createdAt?.toISOString() ?? null });
 });

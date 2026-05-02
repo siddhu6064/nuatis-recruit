@@ -15,6 +15,7 @@ import { Router, type IRouter, type Request, type Response } from "express";
 import multer from "multer";
 import rateLimit from "express-rate-limit";
 import { pool, db, jobsTable, clientsTable, candidatesTable, applicationsTable, resumesTable, activitiesTable, auditLogsTable } from "@workspace/db";
+import { inngest } from "../lib/inngest";
 import { eq, and } from "drizzle-orm";
 import { uploadResume } from "../lib/storage";
 import { logger } from "../lib/logger";
@@ -284,6 +285,33 @@ router.post(
         { jobId: job.id, candidateId, candidateCreated, applicationId: application.id },
         "Public application submitted",
       );
+
+      // Fire Inngest events AFTER commit — do not block the HTTP response
+      void inngest
+        .send([
+          {
+            name: "resume.uploaded",
+            data: {
+              resumeId,
+              candidateId,
+              workspaceId: workspaceId!,
+              fileUrl,
+            },
+          },
+          {
+            name: "application.created",
+            data: {
+              applicationId: application.id,
+              candidateId,
+              jobId: job.id,
+              workspaceId: workspaceId!,
+              resumeId,
+            },
+          },
+        ])
+        .catch((e: unknown) =>
+          logger.warn({ err: e, applicationId: application.id }, "Inngest send failed"),
+        );
 
       res.status(201).json({
         applicationId: application.id,

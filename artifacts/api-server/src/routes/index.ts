@@ -7,6 +7,8 @@ import jobsRouter from "./jobs";
 import candidatesRouter from "./candidates";
 import applicationsRouter from "./applications";
 import publicRouter from "./public";
+import matchScoresRouter from "./match-scores";
+import { inngestHandler } from "./inngest-serve";
 
 const router: IRouter = Router();
 
@@ -18,5 +20,9 @@ router.use(jobsRouter);
 router.use(candidatesRouter);
 router.use(applicationsRouter);
 router.use(publicRouter);
+router.use(matchScoresRouter);
+
+// Inngest serve endpoint — Inngest dev server / cloud polls this to discover functions
+router.use("/inngest", inngestHandler);
 
 export default router;

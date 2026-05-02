@@ -281,6 +281,86 @@ CREATE TRIGGER user_audit_remove
   AFTER DELETE ON users
   FOR EACH ROW
   EXECUTE FUNCTION _audit_user_remove();
+
+-- ─────────────────────────────────────────────────
+-- Batch 3: pgvector extension, embedding columns, HNSW indexes,
+--          and RLS for match_scores + fairness_audit_log
+-- ─────────────────────────────────────────────────
+
+-- 5. pgvector extension (graceful skip if unavailable)
+DO $$
+BEGIN
+  CREATE EXTENSION IF NOT EXISTS vector;
+  EXCEPTION WHEN OTHERS THEN
+    RAISE WARNING 'pgvector extension not available: %. Embedding columns will be text[] placeholders.', SQLERRM;
+END
+$$;
+
+-- 6. Add embedding columns to candidates + jobs (only if pgvector loaded)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector') THEN
+    -- candidates.embedding
+    IF NOT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'candidates' AND column_name = 'embedding'
+    ) THEN
+      ALTER TABLE candidates ADD COLUMN embedding vector(1536);
+    END IF;
+
+    -- jobs.embedding
+    IF NOT EXISTS (
+      SELECT 1 FROM information_schema.columns
+      WHERE table_name = 'jobs' AND column_name = 'embedding'
+    ) THEN
+      ALTER TABLE jobs ADD COLUMN embedding vector(1536);
+    END IF;
+
+    -- HNSW indexes (partial: only rows where embedding IS NOT NULL)
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_indexes WHERE indexname = 'candidates_embedding_hnsw_idx'
+    ) THEN
+      CREATE INDEX candidates_embedding_hnsw_idx
+        ON candidates USING hnsw (embedding vector_cosine_ops)
+        WITH (m = 16, ef_construction = 64)
+        WHERE embedding IS NOT NULL;
+    END IF;
+
+    IF NOT EXISTS (
+      SELECT 1 FROM pg_indexes WHERE indexname = 'jobs_embedding_hnsw_idx'
+    ) THEN
+      CREATE INDEX jobs_embedding_hnsw_idx
+        ON jobs USING hnsw (embedding vector_cosine_ops)
+        WITH (m = 16, ef_construction = 64)
+        WHERE embedding IS NOT NULL;
+    END IF;
+  ELSE
+    RAISE NOTICE 'Skipping embedding columns and HNSW indexes — pgvector not installed.';
+  END IF;
+END
+$$;
+
+-- 7. RLS on Batch 3 tables
+ALTER TABLE match_scores        ENABLE ROW LEVEL SECURITY;
+ALTER TABLE fairness_audit_log  ENABLE ROW LEVEL SECURITY;
+
+ALTER TABLE match_scores        FORCE ROW LEVEL SECURITY;
+ALTER TABLE fairness_audit_log  FORCE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS match_scores_workspace_isolation       ON match_scores;
+DROP POLICY IF EXISTS fairness_audit_log_workspace_isolation ON fairness_audit_log;
+
+CREATE POLICY match_scores_workspace_isolation ON match_scores
+  USING (
+    NULLIF(current_setting('app.current_workspace_id', true), '') IS NULL
+    OR workspace_id::text = current_setting('app.current_workspace_id', true)
+  );
+
+CREATE POLICY fairness_audit_log_workspace_isolation ON fairness_audit_log
+  USING (
+    NULLIF(current_setting('app.current_workspace_id', true), '') IS NULL
+    OR workspace_id::text = current_setting('app.current_workspace_id', true)
+  );
 `;
 
 async function main() {
@@ -293,7 +373,8 @@ async function main() {
     SELECT relname, relrowsecurity
     FROM pg_class
     WHERE relname IN ('workspaces','users','audit_logs','invites',
-                      'clients','jobs','candidates','applications','resumes','activities')
+                      'clients','jobs','candidates','applications','resumes','activities',
+                      'match_scores','fairness_audit_log')
     ORDER BY relname
   `);
   console.log("RLS status:");

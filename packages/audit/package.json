@@ -11,6 +11,7 @@
     "drizzle-orm": "catalog:"
   },
   "devDependencies": {
+    "@opentelemetry/api": "^1.9.1",
     "@types/node": "catalog:"
   }
 }

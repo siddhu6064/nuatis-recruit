@@ -6,6 +6,8 @@ import { Nav } from "@/components/nav";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 import { ArrowLeft, Mail, Phone, MapPin } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
@@ -32,6 +34,123 @@ type Application = {
   source: string | null;
   appliedAt: string | null;
 };
+
+type MatchBreakdown = {
+  skills: number;
+  experience: number;
+  seniority: number;
+  location: number;
+};
+
+type MatchScore = {
+  applicationId: string;
+  score: number;
+  breakdown: MatchBreakdown | null;
+  rationale: string | null;
+  evidenceQuotes: string[] | null;
+  modelVersion: string | null;
+};
+
+function scoreBadgeClass(score: number): string {
+  if (score >= 75) return "bg-emerald-100 text-emerald-800 border-emerald-300";
+  if (score >= 50) return "bg-yellow-100 text-yellow-800 border-yellow-300";
+  return "bg-red-100 text-red-800 border-red-300";
+}
+
+function MatchBadge({ ms }: { ms: MatchScore | undefined }) {
+  if (!ms) {
+    return (
+      <span className="inline-flex items-center px-2 py-0.5 rounded text-xs border bg-muted text-muted-foreground">
+        —
+      </span>
+    );
+  }
+
+  const bd = ms.breakdown;
+  const quotes = ms.evidenceQuotes ?? [];
+
+  return (
+    <TooltipProvider>
+      <Sheet>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <SheetTrigger asChild>
+              <button
+                className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold border cursor-pointer hover:opacity-80 transition-opacity ${scoreBadgeClass(ms.score)}`}
+              >
+                {ms.score}
+              </button>
+            </SheetTrigger>
+          </TooltipTrigger>
+          <TooltipContent className="text-xs space-y-0.5 p-2">
+            {bd ? (
+              <>
+                <p>Skills: {bd.skills}/40</p>
+                <p>Experience: {bd.experience}/30</p>
+                <p>Seniority: {bd.seniority}/20</p>
+                <p>Location: {bd.location}/10</p>
+              </>
+            ) : (
+              <p>Score: {ms.score}</p>
+            )}
+            <p className="text-muted-foreground mt-1">Click for details</p>
+          </TooltipContent>
+        </Tooltip>
+        <SheetContent>
+          <SheetHeader>
+            <SheetTitle>Match Score: {ms.score}/100</SheetTitle>
+          </SheetHeader>
+          <div className="mt-4 space-y-4 text-sm">
+            {bd && (
+              <div className="space-y-2">
+                <h4 className="font-medium text-muted-foreground uppercase text-xs tracking-wide">Breakdown</h4>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="bg-muted/40 rounded p-2">
+                    <div className="text-xs text-muted-foreground">Skills (40%)</div>
+                    <div className="font-semibold">{bd.skills}/40</div>
+                  </div>
+                  <div className="bg-muted/40 rounded p-2">
+                    <div className="text-xs text-muted-foreground">Experience (30%)</div>
+                    <div className="font-semibold">{bd.experience}/30</div>
+                  </div>
+                  <div className="bg-muted/40 rounded p-2">
+                    <div className="text-xs text-muted-foreground">Seniority (20%)</div>
+                    <div className="font-semibold">{bd.seniority}/20</div>
+                  </div>
+                  <div className="bg-muted/40 rounded p-2">
+                    <div className="text-xs text-muted-foreground">Location (10%)</div>
+                    <div className="font-semibold">{bd.location}/10</div>
+                  </div>
+                </div>
+              </div>
+            )}
+            {ms.rationale && (
+              <div>
+                <h4 className="font-medium text-muted-foreground uppercase text-xs tracking-wide mb-1">Rationale</h4>
+                <p className="text-muted-foreground">{ms.rationale}</p>
+              </div>
+            )}
+            {quotes.length > 0 && (
+              <div>
+                <h4 className="font-medium text-muted-foreground uppercase text-xs tracking-wide mb-1">Evidence</h4>
+                <ul className="space-y-1">
+                  {quotes.map((q, i) => (
+                    <li key={i} className="bg-muted/40 rounded px-2 py-1 italic text-muted-foreground">
+                      "{q}"
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+            {ms.modelVersion && (
+              <p className="text-xs text-muted-foreground">Model: {ms.modelVersion}</p>
+            )}
+          </div>
+        </SheetContent>
+      </Sheet>
+    </TooltipProvider>
+  );
+}
 
 export default function CandidateDetail() {
   const { isLoading, isAuthenticated, login } = useAuth();
@@ -60,6 +179,29 @@ export default function CandidateDetail() {
       return res.json();
     },
     enabled: !!id,
+  });
+
+  // Poll match scores for all applications of this candidate every 3s
+  const appIds = appsData?.applications.map((a) => a.id) ?? [];
+  const { data: scoresMap } = useQuery<Map<string, MatchScore>>({
+    queryKey: ["/api/match-scores/candidate", id, appIds.join(",")],
+    queryFn: async () => {
+      const map = new Map<string, MatchScore>();
+      await Promise.all(
+        appIds.map(async (appId) => {
+          const res = await fetch(
+            `/api/match-scores?application_id=${appId}`,
+            { credentials: "include" },
+          );
+          if (!res.ok) return;
+          const data = (await res.json()) as { matchScore: MatchScore | null };
+          if (data.matchScore) map.set(appId, data.matchScore);
+        }),
+      );
+      return map;
+    },
+    enabled: appIds.length > 0,
+    refetchInterval: 3000,
   });
 
   if (isLoading) return <div className="min-h-screen flex items-center justify-center"><div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" /></div>;
@@ -143,13 +285,14 @@ export default function CandidateDetail() {
                       <thead className="bg-muted/50">
                         <tr>
                           <th className="text-left px-4 py-3 font-medium">Job</th>
+                          <th className="text-left px-4 py-3 font-medium">Match</th>
                           <th className="text-left px-4 py-3 font-medium">Stage</th>
                           <th className="text-left px-4 py-3 font-medium">Applied</th>
                         </tr>
                       </thead>
                       <tbody>
                         {appsData?.applications.length === 0 && (
-                          <tr><td colSpan={3} className="px-4 py-6 text-center text-muted-foreground">No applications yet.</td></tr>
+                          <tr><td colSpan={4} className="px-4 py-6 text-center text-muted-foreground">No applications yet.</td></tr>
                         )}
                         {appsData?.applications.map((a) => (
                           <tr key={a.id} className="border-t hover:bg-muted/30">
@@ -157,6 +300,9 @@ export default function CandidateDetail() {
                               <Link href={`/jobs/${a.jobId}`} className="text-primary hover:underline">
                                 {a.jobTitle ?? a.jobId}
                               </Link>
+                            </td>
+                            <td className="px-4 py-3">
+                              <MatchBadge ms={scoresMap?.get(a.id)} />
                             </td>
                             <td className="px-4 py-3 text-muted-foreground">{a.stage}</td>
                             <td className="px-4 py-3 text-muted-foreground text-xs">
