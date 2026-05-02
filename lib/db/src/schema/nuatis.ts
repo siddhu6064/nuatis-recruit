@@ -1,10 +1,13 @@
 import { sql } from "drizzle-orm";
 import {
+  boolean,
   check,
+  integer,
   jsonb,
   pgTable,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
 
@@ -70,6 +73,135 @@ export const invitesTable = pgTable("invites", {
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
 });
 
+// ─────────────────────────────────────────────────────────────────
+// Batch 2: ATS core objects
+// ─────────────────────────────────────────────────────────────────
+
+export const clientsTable = pgTable("clients", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  workspaceId: uuid("workspace_id")
+    .references(() => workspacesTable.id)
+    .notNull(),
+  name: text("name").notNull(),
+  primaryContactName: text("primary_contact_name"),
+  contactEmail: text("contact_email"),
+  contactPhone: text("contact_phone"),
+  contractTerms: text("contract_terms"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+});
+
+export const jobsTable = pgTable(
+  "jobs",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+    workspaceId: uuid("workspace_id")
+      .references(() => workspacesTable.id)
+      .notNull(),
+    clientId: uuid("client_id")
+      .references(() => clientsTable.id)
+      .notNull(),
+    title: text("title").notNull(),
+    description: text("description"),
+    salaryMin: integer("salary_min"),
+    salaryMax: integer("salary_max"),
+    location: text("location"),
+    employmentType: text("employment_type"),
+    status: text("status").default("draft").notNull(),
+    slug: text("slug").notNull(),
+    customFields: jsonb("custom_fields").default({}),
+    // NOTE: embedding vector(3072) added via raw SQL in apply-rls migration.
+    // Nullable + unindexed until Batch 3. TODO Batch 3: add to Drizzle schema.
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("jobs_workspace_slug_idx").on(table.workspaceId, table.slug),
+    check(
+      "jobs_employment_type_check",
+      sql`${table.employmentType} IS NULL OR ${table.employmentType} IN ('full_time','part_time','contract','temp','intern')`,
+    ),
+    check(
+      "jobs_status_check",
+      sql`${table.status} IN ('draft','open','on_hold','closed','filled')`,
+    ),
+  ],
+);
+
+export const candidatesTable = pgTable("candidates", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  workspaceId: uuid("workspace_id")
+    .references(() => workspacesTable.id)
+    .notNull(),
+  name: text("name").notNull(),
+  emails: text("emails").array().default(sql`'{}'::text[]`),
+  phones: text("phones").array().default(sql`'{}'::text[]`),
+  location: text("location"),
+  currentTitle: text("current_title"),
+  currentCompany: text("current_company"),
+  summary: text("summary"),
+  parsedResume: jsonb("parsed_resume"),
+  // NOTE: embedding vector(3072) added via raw SQL in apply-rls migration.
+  // Nullable + unindexed until Batch 3. TODO Batch 3: add to Drizzle schema.
+  source: text("source"),
+  lastActivityAt: timestamp("last_activity_at", { withTimezone: true }),
+  doNotContact: boolean("do_not_contact").default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+});
+
+export const applicationsTable = pgTable(
+  "applications",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+    workspaceId: uuid("workspace_id")
+      .references(() => workspacesTable.id)
+      .notNull(),
+    candidateId: uuid("candidate_id")
+      .references(() => candidatesTable.id)
+      .notNull(),
+    jobId: uuid("job_id")
+      .references(() => jobsTable.id)
+      .notNull(),
+    stage: text("stage").default("applied"),
+    source: text("source"),
+    appliedAt: timestamp("applied_at", { withTimezone: true }).defaultNow(),
+    lastActivityAt: timestamp("last_activity_at", { withTimezone: true }),
+  },
+  (table) => [
+    uniqueIndex("applications_candidate_job_idx").on(
+      table.candidateId,
+      table.jobId,
+    ),
+  ],
+);
+
+export const resumesTable = pgTable("resumes", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  workspaceId: uuid("workspace_id")
+    .references(() => workspacesTable.id)
+    .notNull(),
+  candidateId: uuid("candidate_id")
+    .references(() => candidatesTable.id)
+    .notNull(),
+  fileUrl: text("file_url").notNull(),
+  parsed: jsonb("parsed"),
+  parserVersion: text("parser_version"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+});
+
+export const activitiesTable = pgTable("activities", {
+  id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+  workspaceId: uuid("workspace_id")
+    .references(() => workspacesTable.id)
+    .notNull(),
+  candidateId: uuid("candidate_id")
+    .references(() => candidatesTable.id)
+    .notNull(),
+  userId: uuid("user_id").references(() => usersTable.id),
+  type: text("type").notNull(),
+  payload: jsonb("payload").default({}),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+});
+
+// ─── Types ────────────────────────────────────────────────────────
 export type Organization = typeof organizationsTable.$inferSelect;
 export type InsertOrganization = typeof organizationsTable.$inferInsert;
 export type Workspace = typeof workspacesTable.$inferSelect;
@@ -78,3 +210,14 @@ export type User = typeof usersTable.$inferSelect;
 export type InsertUser = typeof usersTable.$inferInsert;
 export type AuditLog = typeof auditLogsTable.$inferSelect;
 export type Invite = typeof invitesTable.$inferSelect;
+
+export type Client = typeof clientsTable.$inferSelect;
+export type InsertClient = typeof clientsTable.$inferInsert;
+export type Job = typeof jobsTable.$inferSelect;
+export type InsertJob = typeof jobsTable.$inferInsert;
+export type Candidate = typeof candidatesTable.$inferSelect;
+export type InsertCandidate = typeof candidatesTable.$inferInsert;
+export type Application = typeof applicationsTable.$inferSelect;
+export type InsertApplication = typeof applicationsTable.$inferInsert;
+export type Resume = typeof resumesTable.$inferSelect;
+export type Activity = typeof activitiesTable.$inferSelect;

@@ -1,0 +1,92 @@
+PHASE 2 → PHASE 3 · BATCH 2 — CORE OBJECTS + PUBLIC APPLY FLOW · NUATIS RECRUIT
+
+CONTEXT
+Phase 2 foundation is done: monorepo, auth (Replit Auth behind packages/auth), RLS via nuatis_app role + SET LOCAL middleware, withAudit helper, FastAPI /health, 11/11 tests passing. Now adding the core ATS objects so a recruiter can create a job, post it publicly, and receive applications. NO AI features in this batch — resume parsing and match scoring are Batch 3. NO pipeline/kanban view — that is Batch 4.
+
+GOAL
+A recruiter can create a client, create a job under that client, the job has a public URL, a candidate can apply to it via a public form with resume upload, and the application appears in the recruiter's UI.
+
+SCOPE — BUILD / DO THIS
+
+1. Drizzle schema additions in packages/db (one migration, applied via drizzle-kit):
+   - clients (id uuid pk, workspace_id uuid fk → workspaces, name text not null, primary_contact_name text, contact_email text, contact_phone text, contract_terms text, created_at timestamptz default now())
+   - jobs (id uuid pk, workspace_id uuid fk, client_id uuid fk → clients, title text not null, description text, salary_min int, salary_max int, location text, employment_type text check in ('full_time','part_time','contract','temp','intern'), status text check in ('draft','open','on_hold','closed','filled') default 'draft', slug text not null, custom_fields jsonb default '{}'::jsonb, embedding vector(3072) NULL, created_at timestamptz default now(), unique(workspace_id, slug))
+   - candidates (id uuid pk, workspace_id uuid fk, name text not null, emails text[] default '{}', phones text[] default '{}', location text, current_title text, current_company text, summary text, parsed_resume jsonb, embedding vector(3072) NULL, source text, last_activity_at timestamptz, do_not_contact boolean default false, created_at timestamptz default now())
+   - applications (id uuid pk, workspace_id uuid fk, candidate_id uuid fk → candidates, job_id uuid fk → jobs, stage text default 'applied', source text, applied_at timestamptz default now(), last_activity_at timestamptz, unique(candidate_id, job_id))
+   - resumes (id uuid pk, workspace_id uuid fk, candidate_id uuid fk → candidates, file_url text not null, parsed jsonb, parser_version text, created_at timestamptz default now())
+   - activities (id uuid pk, workspace_id uuid fk, candidate_id uuid fk → candidates, user_id uuid fk → users NULL, type text not null, payload jsonb default '{}'::jsonb, created_at timestamptz default now())
+   - pgvector extension already enabled? if not, CREATE EXTENSION IF NOT EXISTS vector first.
+   - DO NOT create HNSW index on embedding columns yet (no embeddings to index until Batch 3).
+   - DO NOT create GIN tsvector index yet (deferred to search batch).
+
+2. RLS policies for all 6 new tables — same pattern as Batch 1B:
+   ALTER TABLE <t> ENABLE ROW LEVEL SECURITY;
+   CREATE POLICY <t>_workspace_isolation ON <t>
+     USING (workspace_id::text = NULLIF(current_setting('app.current_workspace_id', true), ''));
+   Add an extension to tests/security/rls.test.ts that runs the cross-workspace SELECT assertion against EACH of the 6 new tables. Run it. All must PASS.
+
+3. Express API routes (use existing patterns + req.tx + withAudit on every mutation):
+   - POST /api/clients · GET /api/clients · GET /api/clients/:id · PATCH /api/clients/:id
+   - POST /api/jobs · GET /api/jobs (filter by client_id, status) · GET /api/jobs/:id · PATCH /api/jobs/:id · POST /api/jobs/:id/publish (sets status='open')
+   - POST /api/candidates · GET /api/candidates (basic list, no search) · GET /api/candidates/:id · PATCH /api/candidates/:id
+   - GET /api/applications?job_id= · GET /api/applications?candidate_id=
+   - Slug generation: jobs.slug auto-derived from title (lowercase-hyphenated), uniqueness scoped per workspace, append -2 / -3 on collision.
+   - Audit actions to wire: client.create, client.update, job.create, job.update, job.publish, candidate.create, candidate.update.
+
+4. Recruiter UI in apps/web (use shadcn primitives, no design polish — working > pretty):
+   - /clients — table list (name, primary contact, contact email, # open jobs)
+   - /clients/[id] — header + linked jobs list + contact info
+   - /jobs — table list (title, client, status, location, # applicants), filter by client + status
+   - /jobs/[id] — header + Applicants list (name, applied_at, source), no kanban yet
+   - /candidates — table list (name, current title, source, last_activity_at), no search yet
+   - /candidates/[id] — header + Profile tab (basic fields + resume link if any) + Applications tab (jobs they've applied to). Other tabs (Activity, Communications, Notes, Documents) — render placeholders with "coming in Phase 4" inline note.
+   - All forms use react-hook-form + zod (schemas live in lib/api-zod or wherever the orval-generated types are).
+
+5. Public Next.js app in apps/public:
+   - /jobs/[slug] route. Renders job title, description, salary range, location, employment type, client name, "Apply Now" CTA.
+   - Tailwind styling, basic semantic HTML, OG/Twitter meta tags, JSON-LD JobPosting schema.org payload (this is cheap and helps SEO later).
+   - 404 if job slug doesn't exist OR status is not 'open' (drafts and on_hold/closed are private).
+   - Apply form (same page or /jobs/[slug]/apply): name (required), email (required, validated), phone (optional), resume file upload (required: PDF/DOCX/TXT/RTF, max 10MB), cover letter textarea (optional).
+   - On submit: POST /api/public/apply → in BFF: upload resume to storage, find-or-create candidate by email exact match within workspace, create resumes row, create applications row with source='public_apply' and stage='applied', insert activities row type='application.created'. Audit log under candidate.create (if new) and application.create.
+   - Public route bypasses auth but MUST resolve workspace_id from the job's slug → workspace mapping, then SET LOCAL app.current_workspace_id to that workspace before any DB write. RLS still enforced.
+   - Rate-limit-ready stub on /api/public/apply (express-rate-limit middleware with a hardcoded per-IP limit of 10/min). DO NOT build the workspace-scoped rate limiter — that is Phase 6.
+
+6. Resume file storage:
+   - If Cloudflare R2 credentials are configured (env vars R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET, R2_ACCOUNT_ID): upload to R2 via S3-compatible SDK, store the resulting URL in resumes.file_url.
+   - If R2 credentials are NOT configured: use Replit Object Storage as a fallback. Add a // TODO: migrate to R2 post-buildathon comment at the call site. Do NOT block on R2 — log the choice on startup.
+   - Generate a signed URL (60-second expiry) for retrieval; never expose raw bucket URLs.
+
+7. Tests:
+   - Extend tests/security/rls.test.ts with cross-workspace assertions on all 6 new tables.
+   - New test: tests/public-apply/apply-flow.test.ts — submit an apply payload with a fake resume blob, assert candidate + resume + application + activity rows exist with correct workspace_id, and audit_logs row written with action='application.create'.
+   - Run all tests at the end. Must pass: all RLS, all audit, all invite, all apply.
+
+SCOPE — DO NOT BUILD
+- Resume parsing, JD parsing, embedding, match scoring (Batch 3 — apps/ai work, ML-engineer territory, stub the worker call sites with TODO: human ML engineer owns this)
+- Pipeline / kanban view, drag-and-drop stages, stage transitions (Batch 4)
+- Workspace-scoped rate limiter (Phase 6)
+- Notes, @mentions, tasks, hybrid search, candidate dedup beyond email exact match (Batch 5)
+- Email / SMS / voice / call recording (Phase 4)
+- HNSW or GIN indexes (deferred until corresponding feature batch)
+- Career page builder, job widget, job board distribution (Phase 9)
+- Custom apply form builder per workspace (Phase 9 — for now use the hardcoded fields above)
+
+TECH CONSTRAINTS
+- Drizzle migration is one file. Use `drizzle-kit generate` to create it from schema diff, then drizzle-kit push or migrate. Do not hand-edit the generated SQL except to add RLS ALTER + CREATE POLICY statements.
+- pgvector: vector(3072) columns are nullable and unindexed at this stage. The schema must be ready for embedding writes in Batch 3 without a migration.
+- Slug uniqueness scoped per workspace via composite unique index, not global.
+- All API routes go through the existing req.tx + withAudit pattern. Do not bypass.
+- Public apply endpoint resolves workspace via the job's slug lookup before SET LOCAL — do not trust client-supplied workspace IDs.
+- File upload: use multipart/form-data, validate MIME type AND extension AND magic-byte sniff for PDF/DOCX/TXT/RTF. Reject everything else with 415.
+
+ACCEPTANCE — REPORT FORMAT
+Same single block at the end:
+
+SUMMARY — 4 to 6 bullets
+ERRORS — every test failure, every non-zero exit, every TS error, verbatim
+ACCEPTANCE STATUS — items 1 through 7: PASS / FAIL / UNKNOWN with one-sentence reason. Include raw test counts (e.g. "21/21 tests passing").
+SKIPPED — anything deferred and why
+OPEN QUESTIONS — anything you need a human to decide
+
+HARD STOP
+Stop after item 7 and the report. Do not begin Batch 3 (AI parser/match). Do not "improve" anything outside scope. Do not add the workspace-scoped rate limiter. Wait for next prompt.
