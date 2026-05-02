@@ -1,0 +1,156 @@
+▶ PROMPT [Phase 4 · Batch 6A.2 · Replit Agent]
+
+CONTEXT
+6A.0 landed email schema. 6A.1 landed Postmark system mail (133/133 tests).
+This batch wires Nylas for INBOUND only — connect a recruiter's inbox,
+ingest incoming messages into email_threads + email_messages, surface them
+read-only in the Communications tab on candidate detail. Outbound through
+the user's grant, composer, templates, tracking, schedule-send, reply
+workflow events all DEFER to 6A.3.
+
+Project structure: lib/* and artifacts/* (no packages/, no apps/).
+
+GOAL
+A recruiter clicks "Connect inbox" on /settings/email → completes Nylas
+Hosted Auth → within 2 minutes, recent emails from candidates already in
+the workspace appear in the Communications tab on those candidates'
+detail pages, threaded correctly.
+
+SCOPE — BUILD THIS
+
+1. Env precheck. NYLAS_CLIENT_ID, NYLAS_CLIENT_SECRET, NYLAS_WEBHOOK_SECRET,
+   NYLAS_API_URI required. Fail fast on server boot or first Nylas-touching
+   route — no silent degradation. Same pattern as the Postmark precheck.
+
+2. Install @nylas/nylas (v7 SDK for Nylas API v3). Wrapper at
+   lib/email/nylas.ts with a module-level test-hook setter following the
+   same pattern as Postmark's _setTestSendEmail (so vitest can mock
+   without vi.mock ESM pain). Wrapper exposes: createAuthUrl(state),
+   exchangeCode(code), getMessage(grantId, messageId), revokeGrant(grantId).
+
+3. /settings/email page (artifacts/web). Lists rows from
+   connected_email_accounts for current user with provider + email_address
+   + status + last_sync_at. Buttons: "Connect inbox" (kicks off OAuth),
+   "Disconnect" per row. Owner role can see all workspace accounts;
+   Recruiter role sees only their own.
+
+4. GET /api/email/auth/start. Generates Nylas Hosted Auth URL via
+   createAuthUrl, signed state token containing {userId, workspaceId,
+   nonce, exp:5min} (HMAC with NYLAS_WEBHOOK_SECRET or a dedicated
+   STATE_SECRET — pick whichever existing secret pattern fits). Redirects
+   user to Nylas.
+
+5. GET /api/email/auth/callback. Validates state token (signature + exp +
+   workspace match against current session). Exchanges code for grant.
+   Writes connected_email_accounts row (provider derived from grant
+   metadata, email_address, nylas_grant_id, status='active', connected_at
+   now). Audit action='email_account.connected'. Redirects to
+   /settings/email with success toast.
+
+6. Disconnect flow. POST /api/email/accounts/:id/disconnect — calls
+   revokeGrant, updates row status='revoked'. Audit
+   action='email_account.revoked'. Existing email_messages stay (don't
+   cascade delete).
+
+7. POST /api/webhooks/nylas. HMAC SHA256 signature validation against
+   NYLAS_WEBHOOK_SECRET (Nylas v3 uses x-nylas-signature header — match
+   their actual header name and algorithm). 401 on bad sig. Webhook
+   ACCEPTS payload, fires Inngest event nylas.message_received or
+   nylas.grant_expired with raw payload, returns 200 within 2s. Heavy
+   work happens in Inngest functions — same pattern Postmark uses.
+
+8. Inngest function ingestNylasMessage. Idempotent on nylas_message_id.
+   Loads full message via getMessage(grantId, messageId) — webhook
+   payloads from Nylas v3 don't include body. Skip outbound messages
+   (direction filter — don't ingest the recruiter's own sent mail this
+   batch). For inbound:
+   • Lookup candidate by from_address against candidates.emails[]
+     (workspace-scoped via the grant's workspace). If multiple matches,
+     pick most recent activity. If no match, store the message anyway
+     with candidate_id NULL (review queue is a future batch).
+   • Upsert email_threads by nylas_thread_id; update last_message_at and
+     increment message_count.
+   • Insert email_messages with direction='inbound', status='received',
+     all parsed fields. Both writes in one transaction.
+
+9. Inngest function handleGrantExpired. Sets connected_email_accounts
+   status='error', writes audit log. UI shows the bad status; surfacing
+   a re-auth CTA is fine but optional this batch.
+
+10. Communications tab populated. When email_v1_enabled=true AND there
+    are messages for the candidate, render thread list (newest first by
+    last_message_at) → click thread → message list with from/to/subject/
+    body_text, basic readable layout. No quote collapsing, no rich
+    rendering, no attachments, no action buttons. Plain prose pane.
+    Empty state from 6A.0 still shows when no messages exist.
+
+11. Tests (extend existing suites — no component test infra):
+    • env precheck fails when any NYLAS_* missing
+    • State token signs/validates; tampered state rejected
+    • Webhook 401 on bad HMAC, 200 on good
+    • ingestNylasMessage upserts thread + inserts message + matches
+      candidate by from_address
+    • Idempotency: replaying the same nylas_message_id doesn't double-
+      insert
+    • RLS isolation: workspace A can't read workspace B's email_messages
+      or connected_email_accounts (already partly covered from 6A.0;
+      add an end-to-end ingest path test)
+    Expect 133 → ~143.
+
+SCOPE — DO NOT BUILD
+
+- No outbound recruiter-to-candidate send via Nylas. Defer to 6A.3.
+- No composer, no Tiptap email editor, no templates, no merge fields.
+- No tracking pixels, no URL rewriting.
+- No schedule-send.
+- No reply-detection workflow events (the "candidate replied to outreach"
+  activity firing).
+- No attachment upload/download. Skip the attachments column entirely
+  this batch — defer to a later migration.
+- No quoted-reply collapsing in the thread view.
+- No spam scoring, no bulk suppression list.
+- No outbound bounce handling for Nylas-sent mail (Postmark covers
+  system mail bounces already; recruiter→candidate bounces are 6A.3).
+- Do NOT import @nylas/* anywhere outside lib/email/nylas.ts and the
+  Inngest handler.
+
+TECH CONSTRAINTS
+
+- Paths: lib/email/nylas.ts, lib/email/inngest/ingest-nylas-message.ts
+  (or wherever 6A.1 put the email.mention handler — match that
+  convention).
+- Nylas API v3, US region (NYLAS_API_URI=https://api.us.nylas.com).
+- RLS pattern unchanged. Replit Auth abstraction stays clean.
+- Webhook handler must finish in under 3s and offload to Inngest;
+  Nylas retries on non-2xx and we don't want duplicate processing.
+- Idempotency on nylas_message_id is REQUIRED — Nylas does retry.
+- Candidate matching: only match against workspaces.candidates.emails[]
+  for the workspace owning the grant. Cross-workspace matching is
+  forbidden.
+
+ACCEPTANCE
+
+- pnpm test green at ~143.
+- grep '@nylas' across codebase only hits lib/email/nylas.ts and the
+  Inngest handler file.
+- grep '@replit/repl-auth\\|@replit/auth\\|passport-replit' outside
+  lib/auth/ returns zero hits.
+- Manual smoke before reporting done: connect a real Gmail or Outlook
+  inbox via /settings/email; send an email TO that inbox FROM an
+  address matching a seeded candidate; within 2 min the email appears
+  in the candidate's Communications tab as inbound.
+
+REPORT WHAT YOU BUILT
+
+- Files touched (paths only).
+- Test count delta.
+- Schema additions if any (ideally none — 6A.0 covered all columns).
+- Nylas connector mode used (Nylas-managed connector vs own OAuth app).
+- Webhook header/signature scheme verified against Nylas v3 docs.
+- Deviations from this prompt — flag them.
+- Open questions.
+
+HARD STOP
+
+Stop after scope. Do not start outbound. Do not build composer,
+templates, or tracking. Do not propose 6A.3 or 6B. Wait for next prompt.
