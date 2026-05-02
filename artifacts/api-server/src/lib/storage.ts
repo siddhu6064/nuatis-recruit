@@ -35,9 +35,7 @@ export async function uploadResume(
 
   logger.info({ objectPath, mimeType, bytes: buffer.byteLength }, "Uploading resume");
 
-  const result = await storageClient.uploadFromBuffer(buffer, objectPath, {
-    contentType: mimeType,
-  });
+  const result = await storageClient.uploadFromBytes(objectPath, buffer);
 
   if (!result.ok) {
     throw new Error(`Object storage upload failed: ${result.error?.message ?? "unknown"}`);
@@ -67,9 +65,10 @@ export async function getResumeSignedUrl(objectPath: string): Promise<string> {
  * Download a resume buffer from object storage.
  */
 export async function downloadResume(objectPath: string): Promise<Buffer> {
-  const result = await storageClient.downloadAsBuffer(objectPath);
+  const result = await storageClient.downloadAsBytes(objectPath);
   if (!result.ok) {
     throw new Error(`Object storage download failed: ${result.error?.message ?? "unknown"}`);
   }
-  return result.value as Buffer;
+  const [buf] = result.value;
+  return buf;
 }

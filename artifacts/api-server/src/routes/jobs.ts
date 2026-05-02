@@ -191,7 +191,7 @@ router.patch("/jobs/:id", async (req: Request, res: Response) => {
       workspaceId: user.workspaceId,
       action: "job.update",
       targetType: "job",
-      targetId: req.params.id,
+      targetId: jobId,
       userId: user.id,
       ip: req.ip ?? null,
       userAgent: req.headers["user-agent"] ?? null,

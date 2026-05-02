@@ -1,6 +1,8 @@
 import * as oidc from "openid-client";
 import { type Request, type Response, type NextFunction } from "express";
-import type { AuthUser } from "@workspace/api-zod";
+import type { GetCurrentAuthUserResponse } from "@workspace/api-zod";
+type _AuthUserArr = ReturnType<typeof GetCurrentAuthUserResponse["parse"]>["user"];
+type AuthUser = NonNullable<_AuthUserArr>;
 import {
   clearSession,
   getOidcConfig,

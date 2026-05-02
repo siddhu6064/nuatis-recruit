@@ -21,6 +21,7 @@
 import type { Request, Response, NextFunction } from "express";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { pool } from "@workspace/db";
+import type { Pool } from "pg";
 import * as schema from "@workspace/db";
 
 declare global {
@@ -58,7 +59,7 @@ export async function rlsMiddleware(
 
     // Attach a Drizzle instance that routes through this specific client
     // (and thus through the same transaction + RLS context).
-    req.db = drizzle(client as Parameters<typeof drizzle>[0], { schema });
+    req.db = drizzle(client as unknown as Pool, { schema });
 
     const commit = async () => {
       if (!committed) {
