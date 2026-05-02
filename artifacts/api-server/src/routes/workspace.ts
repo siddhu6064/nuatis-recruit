@@ -2,6 +2,7 @@ import { Router, type IRouter, type Request, type Response } from "express";
 import { db, usersTable, invitesTable } from "@workspace/db";
 import { eq, and, isNull, gt } from "drizzle-orm";
 import { requireAuth, getInviteToken, acceptInvite } from "@workspace/auth";
+import { withAudit } from "@workspace/audit";
 
 const router: IRouter = Router();
 
@@ -10,7 +11,8 @@ router.get("/workspace", async (req: Request, res: Response) => {
   if (!user) return;
 
   const { workspacesTable } = await import("@workspace/db");
-  const [workspace] = await db
+  const txDb = req.db ?? db;
+  const [workspace] = await txDb
     .select()
     .from(workspacesTable)
     .where(eq(workspacesTable.id, user.workspaceId));
@@ -31,7 +33,8 @@ router.get("/workspace/members", async (req: Request, res: Response) => {
   const user = requireAuth(req, res);
   if (!user) return;
 
-  const members = await db
+  const txDb = req.db ?? db;
+  const members = await txDb
     .select({
       id: usersTable.id,
       email: usersTable.email,
@@ -75,16 +78,50 @@ router.patch(
       return;
     }
 
-    const [updated] = await db
-      .update(usersTable)
-      .set({ role })
+    const txDb = req.db ?? db;
+
+    // Fetch current role for diff before update
+    const [current] = await txDb
+      .select({ role: usersTable.role })
+      .from(usersTable)
       .where(
         and(
           eq(usersTable.id, userId),
           eq(usersTable.workspaceId, user.workspaceId),
         ),
-      )
-      .returning();
+      );
+
+    if (!current) {
+      res.status(404).json({ error: "Member not found" });
+      return;
+    }
+
+    const oldRole = current.role;
+
+    const [updated] = await withAudit(
+      txDb,
+      {
+        workspaceId: user.workspaceId,
+        action: "member.role_change",
+        targetType: "user",
+        targetId: userId,
+        diff: { from: oldRole, to: role },
+        userId: user.id,
+        ip: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+      },
+      () =>
+        txDb
+          .update(usersTable)
+          .set({ role })
+          .where(
+            and(
+              eq(usersTable.id, userId),
+              eq(usersTable.workspaceId, user.workspaceId),
+            ),
+          )
+          .returning(),
+    );
 
     if (!updated) {
       res.status(404).json({ error: "Member not found" });
@@ -120,14 +157,29 @@ router.delete(
       return;
     }
 
-    await db
-      .delete(usersTable)
-      .where(
-        and(
-          eq(usersTable.id, userId),
-          eq(usersTable.workspaceId, user.workspaceId),
-        ),
-      );
+    const txDb = req.db ?? db;
+
+    await withAudit(
+      txDb,
+      {
+        workspaceId: user.workspaceId,
+        action: "member.removed",
+        targetType: "user",
+        targetId: userId,
+        userId: user.id,
+        ip: req.ip ?? null,
+        userAgent: req.headers["user-agent"] ?? null,
+      },
+      () =>
+        txDb
+          .delete(usersTable)
+          .where(
+            and(
+              eq(usersTable.id, userId),
+              eq(usersTable.workspaceId, user.workspaceId),
+            ),
+          ),
+    );
 
     res.json({ success: true });
   },
@@ -148,7 +200,21 @@ router.post("/workspace/invites", async (req: Request, res: Response) => {
     return;
   }
 
-  const token = await getInviteToken(user.workspaceId, email);
+  // getInviteToken handles the INSERT into invites (trigger writes audit row)
+  // withAudit adds the HTTP-layer audit row (includes user_id, ip, user_agent)
+  const txDb = req.db ?? db;
+  const token = await withAudit(
+    txDb,
+    {
+      workspaceId: user.workspaceId,
+      action: "invite.create",
+      targetType: "invite",
+      userId: user.id,
+      ip: req.ip ?? null,
+      userAgent: req.headers["user-agent"] ?? null,
+    },
+    () => getInviteToken(user.workspaceId, email),
+  );
 
   const proto = req.headers["x-forwarded-proto"] || "https";
   const host =
@@ -169,7 +235,8 @@ router.get("/workspace/invites", async (req: Request, res: Response) => {
   }
 
   const now = new Date();
-  const invites = await db
+  const txDb = req.db ?? db;
+  const invites = await txDb
     .select()
     .from(invitesTable)
     .where(
@@ -215,7 +282,8 @@ router.post(
       return;
     }
 
-    const [updatedUser] = await db
+    const txDb = req.db ?? db;
+    const [updatedUser] = await txDb
       .select()
       .from(usersTable)
       .where(eq(usersTable.id, user.id));

@@ -5,6 +5,7 @@ import pinoHttp from "pino-http";
 import router from "./routes";
 import { logger } from "./lib/logger";
 import { authMiddleware } from "./middlewares/authMiddleware";
+import { rlsMiddleware } from "./middlewares/rlsMiddleware";
 
 const app: Express = express();
 
@@ -32,7 +33,12 @@ app.use(cors({ credentials: true, origin: true }));
 app.use(cookieParser());
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// 1. Resolve session → req.user
 app.use(authMiddleware);
+
+// 2. Bind workspace RLS context → req.db (authenticated requests only)
+app.use(rlsMiddleware);
 
 app.use("/api", router);
 

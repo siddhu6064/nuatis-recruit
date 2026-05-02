@@ -184,6 +184,9 @@ importers:
       '@workspace/api-zod':
         specifier: workspace:*
         version: link:../../lib/api-zod
+      '@workspace/audit':
+        specifier: workspace:*
+        version: link:../../packages/audit
       '@workspace/auth':
         specifier: workspace:*
         version: link:../../packages/auth
@@ -667,6 +670,19 @@ importers:
       '@types/react':
         specifier: 'catalog:'
         version: 19.2.14
+
+  packages/audit:
+    dependencies:
+      '@workspace/db':
+        specifier: workspace:*
+        version: link:../../lib/db
+      drizzle-orm:
+        specifier: 'catalog:'
+        version: 0.45.2(@types/pg@8.18.0)(pg@8.20.0)
+    devDependencies:
+      '@types/node':
+        specifier: 'catalog:'
+        version: 25.3.5
 
   packages/auth:
     dependencies:

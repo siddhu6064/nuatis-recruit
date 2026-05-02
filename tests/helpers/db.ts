@@ -1,13 +1,37 @@
 import pg from "pg";
 
-const { Pool, Client } = pg;
+const { Pool } = pg;
 
 if (!process.env.DATABASE_URL) {
   throw new Error("DATABASE_URL must be set");
 }
 
-// Shared pool for non-RLS queries
-export const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+// Create a pool that switches to nuatis_app role on every connection.
+// The default Replit Postgres user is "postgres" — a superuser — which
+// PostgreSQL always exempts from RLS policies. By switching to nuatis_app
+// (a non-superuser, non-BYPASSRLS role with full DML grants), we make the
+// workspace isolation policies effective in tests exactly as they are at
+// runtime.  This is the same technique used in lib/db/src/index.ts.
+const _rawPool = new Pool({ connectionString: process.env.DATABASE_URL });
+const _originalConnect = _rawPool.connect.bind(_rawPool);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(_rawPool as any).connect = async function (...args: any[]) {
+  if (args.length > 0 && typeof args[0] === "function") {
+    return _originalConnect(...(args as Parameters<typeof _originalConnect>));
+  }
+  const client = await _originalConnect();
+  try {
+    await client.query("SET ROLE nuatis_app");
+  } catch (err) {
+    client.release();
+    throw new Error(
+      `SET ROLE nuatis_app failed — run "pnpm --filter @workspace/db run migrate:rls" first. (${String(err)})`,
+    );
+  }
+  return client;
+};
+
+export const pool = _rawPool as pg.Pool;
 
 /** Run a callback inside a fresh client (useful for RLS / SET LOCAL) */
 export async function withClient<T>(

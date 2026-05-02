@@ -1,0 +1,76 @@
+PHASE 2 · BATCH 1B — RLS + AUDIT + WORKFLOW + GITHUB · NUATIS RECRUIT
+
+CONTEXT
+Batch 1 recovery report identified four gaps: RLS policies do not exist (rowsecurity=false on all tables, pg_policies empty), no code path writes to audit_logs, FastAPI service has no persistent workflow, and no GitHub origin remote is configured. The auth abstraction grep is clean, invite flow passes, FastAPI /health works ad-hoc, and the test files are already written and correctly failing. This batch closes those gaps so the Phase 2 acceptance gate can pass.
+
+GOAL
+Make the existing failing tests pass by adding the missing implementation. No new tests — fix what's broken.
+
+SCOPE — BUILD / DO THIS
+
+1. Postgres RLS policies (packages/db)
+   - Author one Drizzle migration that, for each tenant-scoped table (workspaces, users, audit_logs, and any other table with workspace_id), runs:
+       ALTER TABLE <t> ENABLE ROW LEVEL SECURITY;
+       CREATE POLICY <t>_workspace_isolation ON <t>
+         USING (workspace_id::text = current_setting('app.current_workspace_id', true));
+   - The organizations table is NOT workspace-scoped; do not add a policy there. Instead add an organization-scoped policy if applicable, or document why it's exempt.
+   - Apply the migration via drizzle-kit push (or generate + migrate, your call — document choice).
+   - Verify: SELECT relname, relrowsecurity FROM pg_class WHERE relname IN (...) — all target tables show true. SELECT * FROM pg_policies — one row per policy.
+
+2. SET LOCAL middleware (Express API)
+   - Add Express middleware that runs AFTER auth resolves the session and BEFORE route handlers:
+       open a Drizzle transaction, run SET LOCAL app.current_workspace_id = $1 with the session's workspace_id as a PARAMETERIZED value (not string interpolation), pass the tx to the request as req.tx, commit on response, rollback on error.
+   - Refactor existing route handlers (workspace.ts, member routes) to use req.tx instead of the global db pool.
+   - Routes that legitimately need cross-workspace access (none in v1, but document the seam) bypass via a separate non-RLS db client — DO NOT add this client now, just leave a comment where it would go.
+
+3. Audit log helper (new package: packages/audit)
+   - Export withAudit(tx, action, targetType, targetId, diff, fn) — runs fn() and INSERTs an audit_logs row inside the SAME transaction, capturing user_id, ip, user_agent from the request context.
+   - Wire it into the 4 paths the test exercises:
+       a. workspace creation
+       b. user invite (invite token created)
+       c. role change
+       d. user deactivation / removal
+   - Action enum values: workspace.create, invite.create, member.role_change, member.removed (match exactly what the audit test expects).
+
+4. FastAPI workflow registration
+   - Read /mnt/skills/public/artifacts/SKILL.md (or the relevant artifacts skill) and register a persistent workflow for the apps/ai FastAPI service on port 9000.
+   - Update replit.nix / pyproject.toml so Python + uvicorn + fastapi survive Repl restarts (no manual /home/runner/.nix-profile bootstrap needed).
+   - Verify: kill the Repl, restart, confirm GET /health returns 200 without manual intervention.
+
+5. GitHub origin
+   - Run: git remote add origin https://github.com/siddhu6064/nuatis-recruit.git
+   - Run: git push -u origin main
+   - If push fails because the repo doesn't exist on GitHub yet, STOP and report — do not create the repo via API or guess an alternative URL.
+   - If push succeeds, run git remote -v and git log --oneline -5 and paste both.
+
+6. Re-run all three test suites and report results:
+   - tests/security/rls.test.ts — expect all 3 PASS
+   - tests/audit/audit-log.test.ts — expect all 4 PASS
+   - tests/invite/invite-flow.test.ts — expect all 4 still PASS (regression check)
+
+SCOPE — DO NOT BUILD
+- No Batch 2 features (candidates, clients, jobs, applications, public job page, apply form)
+- No new Drizzle tables beyond what RLS migration touches
+- No new tests (the existing failing ones are the spec)
+- No UI changes
+- No refactor of the Express-vs-tRPC architecture
+- Do not add a non-RLS escape-hatch DB client — just leave the comment marker
+
+TECH CONSTRAINTS
+- RLS policy uses current_setting('app.current_workspace_id', true) — the second arg (true) returns NULL instead of erroring when unset, which is what we want for unauthenticated requests
+- SET LOCAL must use parameterized SQL (sql`SET LOCAL app.current_workspace_id = ${workspaceId}` via Drizzle, NOT string concat)
+- withAudit must be transaction-scoped — audit insert and mutation atomic together; one fails, both roll back
+- packages/audit exports a single helper, no Drizzle middleware/hooks magic
+- Pin Python version explicitly in nix config; do not rely on Nix profile state
+
+ACCEPTANCE — REPORT FORMAT
+Same as last time. Single block at the end:
+
+SUMMARY — 3 to 6 bullets
+ERRORS — every test failure, every non-zero exit, every TS error, verbatim
+ACCEPTANCE STATUS — items 1 through 6: PASS / FAIL / UNKNOWN with one-sentence reason. Include raw test output for item 6.
+SKIPPED — anything deferred and why
+OPEN QUESTIONS — anything you need a human to decide
+
+HARD STOP
+Stop after item 6 and the report. Do not begin Batch 2. Do not "improve" anything outside scope. Wait for next prompt.
