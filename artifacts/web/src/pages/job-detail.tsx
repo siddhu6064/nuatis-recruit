@@ -1,6 +1,6 @@
 import { useAuth } from "@workspace/replit-auth-web";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { Link, useParams } from "wouter";
 import { Nav } from "@/components/nav";
 import { Badge } from "@/components/ui/badge";
@@ -167,6 +167,8 @@ export default function JobDetail() {
   const id = params.id;
   const qc = useQueryClient();
   const { toast } = useToast();
+  // Cap badge polling at 10 rounds (30 s); stop early if all rows have scores
+  const pollCountRef = useRef(0);
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) login();
@@ -192,16 +194,27 @@ export default function JobDetail() {
     enabled: !!id,
   });
 
-  // Poll match scores every 3s to catch Inngest results as they land
+  // Poll match scores every 3s to catch Inngest results as they land.
+  // Stops after 10 polls (30 s) OR once every visible application has a score.
   const { data: scoresData } = useQuery<{ matchScores: MatchScore[] }>({
     queryKey: ["/api/match-scores/job", id],
     queryFn: async () => {
+      pollCountRef.current += 1;
       const res = await fetch(`/api/match-scores?job_id=${id}`, { credentials: "include" });
       if (!res.ok) return { matchScores: [] };
       return res.json();
     },
     enabled: !!id,
-    refetchInterval: 3000,
+    refetchInterval: (query) => {
+      if (pollCountRef.current >= 10) return false;
+      const scores =
+        (query.state.data as { matchScores: MatchScore[] } | undefined)?.matchScores ?? [];
+      const apps = appsData?.applications ?? [];
+      if (apps.length > 0 && apps.every((a) => scores.some((s) => s.applicationId === a.id))) {
+        return false;
+      }
+      return 3000;
+    },
   });
 
   const scoreMap = new Map(

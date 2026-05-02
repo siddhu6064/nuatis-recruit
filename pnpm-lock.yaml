@@ -731,6 +731,13 @@ importers:
         version: 25.3.5
 
   scripts:
+    dependencies:
+      '@types/pg':
+        specifier: ^8.18.0
+        version: 8.18.0
+      pg:
+        specifier: ^8.20.0
+        version: 8.20.0
     devDependencies:
       '@types/node':
         specifier: 'catalog:'

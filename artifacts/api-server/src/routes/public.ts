@@ -286,8 +286,15 @@ router.post(
         "Public application submitted",
       );
 
-      // Fire Inngest events AFTER commit — do not block the HTTP response
-      void inngest
+      // Send response immediately — HTTP client doesn't wait for Inngest
+      res.status(201).json({
+        applicationId: application.id,
+        candidateId,
+        appliedAt: application.applied_at?.toISOString() ?? new Date().toISOString(),
+      });
+
+      // Await Inngest events AFTER commit + response (response already flushed above)
+      await inngest
         .send([
           {
             name: "resume.uploaded",
@@ -312,12 +319,6 @@ router.post(
         .catch((e: unknown) =>
           logger.warn({ err: e, applicationId: application.id }, "Inngest send failed"),
         );
-
-      res.status(201).json({
-        applicationId: application.id,
-        candidateId,
-        appliedAt: application.applied_at?.toISOString() ?? new Date().toISOString(),
-      });
     } catch (err) {
       if (!committed) {
         try {

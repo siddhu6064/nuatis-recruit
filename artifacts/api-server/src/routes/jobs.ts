@@ -75,8 +75,11 @@ router.post("/jobs", async (req: Request, res: Response) => {
         .returning(),
   );
 
-  // Fire job.created AFTER DB commit so Inngest has the committed row
-  void inngest
+  // Send response immediately; await Inngest after response is flushed
+  res.status(201).json({ ...job, createdAt: job.createdAt?.toISOString() ?? null });
+
+  // Await Inngest event AFTER commit + response (response already sent above)
+  await inngest
     .send({
       name: "job.created",
       data: {
@@ -88,8 +91,6 @@ router.post("/jobs", async (req: Request, res: Response) => {
     .catch((e: unknown) =>
       logger.warn({ err: e, jobId: job.id }, "Inngest job.created send failed"),
     );
-
-  res.status(201).json({ ...job, createdAt: job.createdAt?.toISOString() ?? null });
 });
 
 // GET /api/jobs

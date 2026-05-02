@@ -125,7 +125,7 @@ describe("AI service — /embed stub", () => {
     available = await checkServiceAvailable();
   });
 
-  it("returns a 3072-dim deterministic vector", async () => {
+  it("returns a 1536-dim deterministic vector", async () => {
     if (!available) return;
 
     const text = "Senior software engineer with Python and React";
@@ -141,10 +141,10 @@ describe("AI service — /embed stub", () => {
     expect(body).toHaveProperty("vector");
     expect(body).toHaveProperty("dimensions");
     expect(body).toHaveProperty("model_version");
-    expect(body.dimensions).toBe(3072);
+    expect(body.dimensions).toBe(1536);
 
     const vec = body.vector as number[];
-    expect(vec.length).toBe(3072);
+    expect(vec.length).toBe(1536);
     expect(String(body.model_version)).toContain("stub");
 
     // Determinism: same input → same vector

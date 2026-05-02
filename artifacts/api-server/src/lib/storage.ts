@@ -1,26 +1,20 @@
 /**
  * Storage abstraction for resume file uploads.
  *
- * Priority:
- *   1. Replit Object Storage (always available in this environment)
- *
- * TODO: migrate to R2 post-buildathon when R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY,
- *       R2_BUCKET, R2_ACCOUNT_ID env vars are configured.
- *
- * Files are stored under PRIVATE_OBJECT_DIR / resumes / <workspaceId> / <filename>.
- * Retrieval uses a signed URL with a 60-second expiry; raw bucket paths are never
- * exposed to clients.
+ * Uses @google-cloud/storage directly with Replit sidecar authentication.
+ * Files are stored under PRIVATE_OBJECT_DIR/resumes/<workspaceId>/<filename>.
  */
-import { Client as ObjectStorageClient } from "@replit/object-storage";
+import { Storage } from "@google-cloud/storage";
 import { logger } from "./logger";
 
-let _storageClient: ObjectStorageClient | null = null;
+const storage = new Storage();
 
-function getStorageClient(): ObjectStorageClient {
-  if (!_storageClient) {
-    _storageClient = new ObjectStorageClient();
+function getBucket() {
+  const bucketId = process.env.DEFAULT_OBJECT_STORAGE_BUCKET_ID;
+  if (!bucketId) {
+    throw new Error("DEFAULT_OBJECT_STORAGE_BUCKET_ID env var is not set");
   }
-  return _storageClient;
+  return storage.bucket(bucketId);
 }
 
 function buildObjectPath(workspaceId: string, filename: string): string {
@@ -39,32 +33,13 @@ export async function uploadResume(
   mimeType: string,
 ): Promise<string> {
   const objectPath = buildObjectPath(workspaceId, filename);
-
   logger.info({ objectPath, mimeType, bytes: buffer.byteLength }, "Uploading resume");
 
-  const result = await getStorageClient().uploadFromBytes(objectPath, buffer);
-
-  if (!result.ok) {
-    throw new Error(`Object storage upload failed: ${result.error?.message ?? "unknown"}`);
-  }
+  const bucket = getBucket();
+  const file = bucket.file(objectPath);
+  await file.save(buffer, { contentType: mimeType });
 
   logger.info({ objectPath }, "Resume uploaded successfully");
-  return objectPath;
-}
-
-/**
- * Generate a short-lived signed download URL for a resume.
- * The URL expires after 60 seconds.
- */
-export async function getResumeSignedUrl(objectPath: string): Promise<string> {
-  const result = await getStorageClient().downloadAsText(objectPath);
-  if (!result.ok) {
-    throw new Error(`Failed to verify object exists: ${result.error?.message ?? "unknown"}`);
-  }
-
-  // @replit/object-storage does not have signed URLs — serve via /api/resumes/:id route
-  // which streams the file. Return the internal path as a reference; the route handler
-  // calls downloadAsBuffer and streams the response.
   return objectPath;
 }
 
@@ -72,10 +47,16 @@ export async function getResumeSignedUrl(objectPath: string): Promise<string> {
  * Download a resume buffer from object storage.
  */
 export async function downloadResume(objectPath: string): Promise<Buffer> {
-  const result = await getStorageClient().downloadAsBytes(objectPath);
-  if (!result.ok) {
-    throw new Error(`Object storage download failed: ${result.error?.message ?? "unknown"}`);
-  }
-  const [buf] = result.value;
-  return buf;
+  const bucket = getBucket();
+  const file = bucket.file(objectPath);
+  const [contents] = await file.download();
+  return contents;
+}
+
+/**
+ * Returns the internal object path — there are no public presigned URLs.
+ * Retrieval is done via /api/resumes/:id which streams from storage.
+ */
+export async function getResumeSignedUrl(objectPath: string): Promise<string> {
+  return objectPath;
 }

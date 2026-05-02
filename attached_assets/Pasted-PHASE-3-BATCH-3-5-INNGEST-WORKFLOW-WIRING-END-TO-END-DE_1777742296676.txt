@@ -1,0 +1,80 @@
+PHASE 3 · BATCH 3.5 — INNGEST WORKFLOW WIRING + END-TO-END DEMO LOOP · NUATIS RECRUIT
+
+CONTEXT
+Batch 3 shipped the AI service infrastructure with stubs and three Inngest function definitions, but Inngest itself is not running as a persistent workflow yet. Functions are registered code-side but events fired by route handlers go nowhere. This batch starts the Inngest dev server, points app code at it, and proves the full end-to-end flow: public job apply → resume.uploaded event → parse → embed → application.created event → match → match_scores row written → UI badge updates.
+
+GOAL
+A recruiter can submit a public application and watch a match-score badge appear on the Applicants list within 30 seconds, all driven by Inngest functions executing the stubbed AI pipeline. No manual triggering. No /api/inngest curl-prodding. Just: apply → wait → badge.
+
+SCOPE — BUILD / DO THIS
+
+1. Inngest dev server as a persistent workflow:
+   - Register the Inngest CLI dev server (npx inngest-cli@latest dev) as a Replit workflow on its standard port (8288 by default — confirm).
+   - Workflow must auto-start on Repl boot. Same persistence model as the FastAPI service (do not regress that).
+   - Inngest dev UI accessible at the workflow URL — list me the URL in the report.
+
+2. Point the app at Inngest:
+   - INNGEST_BASE_URL or equivalent env var set in the API server's environment.
+   - The /api/inngest endpoint that Batch 3 added must register all 3 functions on startup. Confirm via the Inngest dev UI Functions tab — all 3 visible.
+
+3. Wire the inngest.send() calls (these may already be in place from Batch 3 — verify and patch if missing):
+   - After the public apply route writes resume + candidate + application + activity rows AND commits the transaction, send 'resume.uploaded' with {resume_id, candidate_id, file_url, workspace_id}.
+   - After the same route's commit, send 'application.created' with {application_id, candidate_id, job_id, workspace_id}.
+   - When a job is created via POST /api/jobs and the transaction commits, send 'job.created' with {job_id, workspace_id, description}.
+   - Critical: events fire AFTER commit, never inside the transaction. If they fire inside and the tx rolls back, you've sent events for non-existent rows.
+
+4. UI badge live-update on the Applicants list at /jobs/[id]:
+   - When match_scores rows are written, the corresponding row on the Applicants list refreshes its badge from "—" to the colored score within ~3 seconds.
+   - Implementation: simple poll-every-3s of GET /api/applications?job_id=X with includeMatchScore=true (or add the score to the existing applications response payload). Do NOT build SSE or LISTEN/NOTIFY for this — that is Batch 4 with the kanban.
+   - The poll should stop after the score loads (no need to keep polling indefinitely once every visible row has a score).
+
+5. End-to-end demo test (manual, scripted):
+   - Add scripts/demo-loop.ts (or .sh — your call) that:
+     a. Logs in via test credentials (or uses a service account)
+     b. Creates a workspace if needed, a client, a job, publishes the job
+     c. Submits a public application against that job's slug with a sample PDF resume from tests/fixtures/sample-resume.pdf (create that fixture if absent — any small valid PDF)
+     d. Polls match_scores for that application_id for up to 30s
+     e. Asserts a row exists with score in [0,100] and prints PASS / FAIL with the score
+   - Run it. Paste the output.
+
+6. End-to-end automated test:
+   - tests/e2e/demo-loop.test.ts that does the same flow programmatically (not via the demo script) and asserts:
+     - All 3 Inngest events fire (use Inngest's introspection or DB-side check on the rows the events should produce)
+     - parsed_resume populated on candidates row within 30s of apply
+     - jobs.parsed_jd + jobs.embedding populated within 30s of job creation
+     - match_scores row exists for the application with valid score and breakdown
+   - Run it. All previous tests still pass.
+
+7. Visual confirmation:
+   - Take a screenshot of the Applicants list AFTER the badge has populated, showing at least one application with a colored score badge (green/yellow/red, not gray "—").
+   - Embed it or save to docs/buildathon-day1-demo.png. Don't block on this if screenshotting tooling is awkward in the Repl — a description is fine, but try.
+
+SCOPE — DO NOT BUILD
+- Real Claude / OpenAI calls (still ML engineer's territory)
+- SSE / Postgres LISTEN/NOTIFY for live updates (Batch 4)
+- Kanban / pipeline drag-drop (Batch 4)
+- Inngest production hosting setup (only the dev server here — production is post-buildathon)
+- Sentry integration on Inngest failures (still a [SENTRY] log marker)
+- Portkey gateway
+- Bias audit real logic
+- Eval harness fill-in
+- Real-time multi-recruiter sync (Batch 4)
+
+TECH CONSTRAINTS
+- Inngest dev server runs in development mode for the buildathon. It is ephemeral and stateless — fine for now. Production Inngest setup is out of scope.
+- inngest.send() must be awaited and must be after tx.commit. If anywhere in code base it's inside the transaction or fire-and-forget without await, fix it.
+- Polling interval for badge: 3000ms. Max 10 polls per visit (so after 30s the UI gives up and the user sees "—" with a "Score pending" tooltip — that is not a failure mode you need to fully solve, just don't poll forever).
+- Demo loop script must be runnable via a single `pnpm` (or equivalent) command. Document the command in the report.
+- Event payloads must include workspace_id so the function handlers can SET LOCAL app.current_workspace_id before any DB write inside the function. RLS still enforced inside Inngest function execution.
+
+ACCEPTANCE — REPORT FORMAT
+Same single block at the end:
+
+SUMMARY — 3 to 5 bullets
+ERRORS — every test failure, every non-zero exit, every TS error, verbatim
+ACCEPTANCE STATUS — items 1 through 7: PASS / FAIL / UNKNOWN with one-sentence reason. Include test count summary and the demo script's end-to-end timing (e.g., "score appeared at t=8.2s after apply submit").
+SKIPPED — anything deferred and why
+OPEN QUESTIONS — anything you need a human to decide
+
+HARD STOP
+Stop after item 7 and the report. Do not begin Batch 4 (kanban / pipeline). Do not call real LLMs. Do not build SSE. Wait for next prompt.
