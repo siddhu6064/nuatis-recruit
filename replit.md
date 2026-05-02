@@ -111,12 +111,27 @@ AI service (`artifacts/ai-server`) runs Python/FastAPI at port 9000 (`/ai` path)
 - `POST /api/inngest` (Inngest serve endpoint)
 - `GET /api/public/jobs`, `GET /api/public/jobs/:slug`, `POST /api/public/jobs/:slug/apply`
 
-### Test Suite (36/36 passing)
+### Inngest Workflow Wiring (Batch 3.5)
 
-- `tests/security/rls.test.ts` — 12 RLS isolation tests (Batch 1, 2 + 3 tables)
+- Inngest Dev Server runs on port 8008; API server registers functions at `POST /api/inngest`
+- `POST /api/_test/inngest-send` — dev-only endpoint to fire events via SDK (bypasses Inngest's `/e` direct HTTP)
+- All three Inngest functions verified end-to-end: `job.created` → `parsed_jd`, `resume.uploaded` → `parsed_resume`, `application.created` → `match_scores`
+- Demo loop script: `pnpm --filter @workspace/scripts run demo-loop` — seeds, publishes a job, submits an application via HTTP, polls for a match score, then cleans up
+
+### Object Storage Notes
+
+- `@replit/object-storage` requires `DEFAULT_OBJECT_STORAGE_BUCKET_ID` env var; the `Client` is constructed with `{ bucketId }` explicitly to bypass sidecar discovery
+- In `NODE_ENV=development`, upload failures fall back gracefully to the stub object path (AI service is stubbed and doesn't need the actual file)
+- `PRIVATE_OBJECT_DIR` contains the bucket-prefixed path prefix (e.g. `/replit-objstore-xxxx/.private`)
+
+### Test Suite (41/41 passing)
+
+- `tests/security/rls.test.ts` — 20 RLS isolation tests (all tables including match_scores + fairness_audit_log)
 - `tests/audit/audit-log.test.ts` — 4 trigger audit tests
 - `tests/invite/invite-flow.test.ts` — 4 invite flow tests
-- `tests/ai-pipeline/parse-stub.test.ts` — 5 AI service parse/embed tests (skipped if AI service offline)
+- `tests/public-apply/apply-flow.test.ts` — 3 public apply DB assertion tests
+- `tests/ai-pipeline/parse-stub.test.ts` — 5 AI service parse/embed tests
 - `tests/ai-pipeline/match-flow.test.ts` — 5 match pipeline + DB integration tests
+- `tests/e2e/demo-loop.test.ts` — 5 E2E tests (apply → Inngest → match_scores within 30 s)
 
 See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.

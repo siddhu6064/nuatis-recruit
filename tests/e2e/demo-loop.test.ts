@@ -179,8 +179,9 @@ describe("E2E: apply → Inngest pipeline → match_score", () => {
       body: form,
     });
 
-    expect(res.status, `apply response: ${await res.text()}`).toBe(201);
-    const data = (await res.json()) as {
+    const body = await res.text();
+    expect(res.status, `apply response: ${body}`).toBe(201);
+    const data = JSON.parse(body) as {
       applicationId: string;
       candidateId: string;
       appliedAt: string;
