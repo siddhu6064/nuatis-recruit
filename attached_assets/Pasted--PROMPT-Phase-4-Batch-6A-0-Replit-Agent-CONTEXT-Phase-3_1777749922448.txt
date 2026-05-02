@@ -1,0 +1,115 @@
+▶ PROMPT [Phase 4 · Batch 6A.0 · Replit Agent]
+
+CONTEXT
+Phase 3 build is complete. 120/120 tests passing. Notes, tasks, hybrid search,
+dedup all live as of Batch 5. Phase 4 (Communication Hub) starts here. Vendor
+accounts (Postmark, Nylas) are being provisioned by the human in parallel —
+they will not exist yet when this batch runs. This batch lays the schema and
+RLS foundation for email so that Batch 6A.1 can land OAuth + actual send/receive
+without also doing DB work.
+
+The Communications tab on /candidates/[id] is currently a placeholder. After
+this batch it should render an empty-state component, ready to display real
+threads once 6A.1 syncs them.
+
+GOAL
+Three new tables (email_threads, email_messages, connected_email_accounts)
+exist under RLS with isolation tests passing. Candidate detail Communications
+tab renders an empty state behind a workspace-level feature flag.
+
+SCOPE — BUILD THIS
+1. Drizzle schema additions in packages/db (one migration file):
+   • email_threads(id, workspace_id, candidate_id nullable fk, subject,
+     last_message_at, message_count int default 0, nylas_thread_id text
+     nullable, created_at)
+   • email_messages(id, workspace_id, thread_id fk, nylas_message_id text
+     unique nullable, direction enum('outbound','inbound'), from_address,
+     to_addresses text[], cc_addresses text[], bcc_addresses text[], subject,
+     body_text, body_html nullable, message_id text nullable, in_reply_to
+     text nullable, sent_at timestamptz, status enum('queued','sent',
+     'delivered','bounced','failed','received'), bounce_reason text nullable,
+     created_at)
+   • connected_email_accounts(id, workspace_id, user_id fk, provider
+     enum('gmail','outlook','imap'), email_address, nylas_grant_id text,
+     connected_at, last_sync_at nullable, status enum('active','revoked',
+     'error'))
+2. RLS policies on all three tables — same pattern as existing tables:
+     USING (workspace_id::text = NULLIF(current_setting(
+       'app.current_workspace_id', true), ''))
+   Apply to nuatis_app role. Both app pool AND test pool must SET ROLE
+   nuatis_app for these to work — verify the existing pattern is honored.
+3. Indexes:
+   • email_threads: (workspace_id, candidate_id), (workspace_id,
+     last_message_at desc)
+   • email_messages: (workspace_id, thread_id, sent_at desc), unique on
+     (nylas_message_id) where not null
+   • connected_email_accounts: unique (workspace_id, user_id, email_address)
+4. Audit action keys reserved (just add to the action key allowlist if you
+   have one; no actual audit log writes in this batch): email.sent,
+   email.received, email.bounced, email_account.connected,
+   email_account.revoked
+5. Workspace setting flag email_v1_enabled bool default false. Add to
+   workspaces.settings_json or as its own column — pick the existing pattern.
+6. Communications tab on /candidates/[id]:
+   • If email_v1_enabled is false: keep "coming soon" placeholder (existing
+     behavior)
+   • If true: render an empty-state component with copy "No emails yet —
+     connect your inbox to start syncing conversation history" and a
+     disabled CTA button labeled "Connect inbox" (the actual settings page
+     lands in 6A.1)
+7. Test workspace fixtures: enable email_v1_enabled on the test workspace so
+   the empty state renders in tests. Production workspaces stay false.
+8. Cross-workspace RLS tests in security/rls suite covering all three new
+   tables — workspace A cannot read or write rows belonging to workspace B.
+   Add ~5-6 tests.
+
+SCOPE — DO NOT BUILD
+- No Nylas client code, no OAuth flow, no /api/email routes, no /api/webhooks
+  routes — those are 6A.1
+- No Postmark integration of any kind. The @mention email half from Batch 5
+  stays pending; do NOT wire it up here
+- No composer UI, no template library, no tracking pixels, no schedule-send,
+  no reply-detection workflow events, no bounce automation
+- No LLM-based email summarization or AI reply suggestions
+- No email_attachments table — deferred to later batch
+- No /settings/email page — its CTA in the empty state is intentionally
+  disabled until 6A.1
+- Do NOT install @nylas/nylas-nodejs or postmark packages yet. Schema only.
+
+TECH CONSTRAINTS
+- Reuse the existing RLS pattern exactly (nuatis_app role, NULLIF guard, no
+  schema-level deviations). The notifications table's split INSERT/SELECT
+  policy is NOT needed here; standard workspace-only USING clause is fine
+  for all three tables
+- Replit Auth abstraction stays clean — no @replit/* imports outside
+  packages/auth/. The connected_email_accounts.user_id fk uses the existing
+  users table
+- Drizzle migration must be a single file committed to packages/db/migrations
+- No new test infra; extend existing security/rls and component-rendering
+  test suites
+- Empty-state component should match the visual language of existing empty
+  states (e.g., the /tasks empty state from Batch 5)
+
+ACCEPTANCE
+- pnpm db:migrate runs clean on a fresh DB
+- pnpm test passes — expect 120 → ~125 tests (5-6 new RLS isolation tests)
+- Open /candidates/[id] in test workspace → Communications tab renders empty
+  state without errors; "Connect inbox" button is visible but disabled
+- Open same page in a workspace with email_v1_enabled=false → still shows
+  "coming soon" placeholder (regression check)
+- grep '@nylas\\|from .postmark.' returns empty across the codebase (vendor
+  packages NOT yet imported)
+- Replit Auth abstraction grep stays clean: no @replit/(repl-auth|auth) or
+  passport-replit outside packages/auth/
+
+REPORT WHAT YOU BUILT
+- Migration file path + table column list
+- RLS policy SQL
+- Test count delta and which suites changed
+- Files touched (paths only, not diffs)
+- Any deviations from this prompt scope — must be flagged
+- Open questions
+
+HARD STOP
+Stop after scope. Do not propose 6A.1, do not write any Nylas/Postmark code,
+do not offer to "also wire up X." Wait for next prompt.
