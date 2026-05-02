@@ -124,14 +124,45 @@ AI service (`artifacts/ai-server`) runs Python/FastAPI at port 9000 (`/ai` path)
 - In `NODE_ENV=development`, upload failures fall back gracefully to the stub object path (AI service is stubbed and doesn't need the actual file)
 - `PRIVATE_OBJECT_DIR` contains the bucket-prefixed path prefix (e.g. `/replit-objstore-xxxx/.private`)
 
-### Test Suite (41/41 passing)
+### Transactional Email + Webhooks (Batch 6A.1)
 
-- `tests/security/rls.test.ts` — 20 RLS isolation tests (all tables including match_scores + fairness_audit_log)
+- **Postmark wrapper**: `artifacts/api-server/src/lib/email/postmark.ts`
+  - `sendTransactional()` — lazy env validation, returns `{ postmarkMessageId, submittedAt }`
+  - `_setTestSendEmail()` — test hook (module-level override; avoids CJS vi.mock unreliability)
+- **Mention email template**: `artifacts/api-server/src/lib/email/templates/mention.ts`
+- **Inngest function**: `sendSystemMentionEmailJob` fires on `email.mention` event
+- **Routes**:
+  - `POST /api/email/send-system` — internal route (requires `X-Internal-Secret`)
+  - `POST /api/webhooks/postmark` — Basic-auth-protected; handles `HardBounce` → flips `email_messages.status` to `"bounced"` + writes `email.bounced` audit row
+- **Schema**: migration `0007_system_email.sql` adds `postmark_message_id` to `email_messages`, makes `thread_id` nullable for system emails
+- **Notes wiring**: `notes.ts` fires `inngest.send("email.mention")` for each @mention; notification UUID generated client-side (avoids RETURNING filtered by recipient-scoped RLS SELECT policy)
+
+### RLS Design Note — Notifications
+
+`notifications` table uses split RLS: INSERT policy checks workspace only; SELECT/UPDATE/DELETE policy scopes to `recipient_id = current_user_id`. `.returning()` on INSERT is treated as SELECT by PostgreSQL and is filtered out when inserting notifications for other users. Pattern: generate UUID client-side and omit `.returning()`.
+
+### Test Suite (133/133 passing — 21 test files)
+
+- `tests/security/rls.test.ts` — 20 RLS isolation tests (all tables including email tables)
 - `tests/audit/audit-log.test.ts` — 4 trigger audit tests
 - `tests/invite/invite-flow.test.ts` — 4 invite flow tests
 - `tests/public-apply/apply-flow.test.ts` — 3 public apply DB assertion tests
 - `tests/ai-pipeline/parse-stub.test.ts` — 5 AI service parse/embed tests
 - `tests/ai-pipeline/match-flow.test.ts` — 5 match pipeline + DB integration tests
 - `tests/e2e/demo-loop.test.ts` — 5 E2E tests (apply → Inngest → match_scores within 30 s)
+- `tests/kanban/stage-transitions.test.ts` — 8 stage move tests
+- `tests/kanban/bulk-operations.test.ts` — 9 bulk move/reject tests
+- `tests/kanban/rejection-reasons.test.ts` — 6 rejection reasons tests
+- `tests/realtime/sse-stage-updates.test.ts` — 3 SSE tests
+- `tests/search/hybrid-search.test.ts` — 7 search tests
+- `tests/search/perf.test.ts` — 1 P50 latency test
+- `tests/notes/mentions.test.ts` — 9 notes + @mention tests
+- `tests/tasks/inbox.test.ts` — 12 task inbox tests
+- `tests/dedup/email-match.test.ts` — 5 email dedup tests
+- `tests/dedup/phone-match.test.ts` — 5 phone dedup tests
+- `tests/dedup/embedding-match.test.ts` — 3 embedding dedup tests
+- `tests/dedup/merge.test.ts` — 10 candidate merge tests
+- `tests/email/postmark-send.test.ts` — 3 Postmark wrapper unit tests
+- `tests/email/webhook.test.ts` — 4 Postmark webhook tests (2 auth enforcement + 2 bounce handling; bounce path skips gracefully when POSTMARK_WEBHOOK_USERNAME/PASSWORD env vars are absent)
 
 See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.

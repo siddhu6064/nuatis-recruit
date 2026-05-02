@@ -2,39 +2,36 @@
  * tests/email/postmark-send.test.ts
  *
  * Unit tests for the Postmark transactional email wrapper.
- * Uses vi.hoisted + vi.mock to intercept the postmark module before any
- * imports resolve — no real HTTP calls are made.
+ *
+ * vitest's vi.mock() on a CJS npm package (postmark uses CommonJS) is
+ * unreliable when vitest resolves modules with the "module" condition, and
+ * vi.spyOn() cannot intercept ES-module-internal call sites. Instead the
+ * wrapper exports a _setTestSendEmail() hook that installs a fake sendEmail
+ * function directly at the module-variable level — guaranteed to be read by
+ * sendTransactional() on every call.
  *
  * Tests:
  *   1. Throws clearly when POSTMARK_SERVER_TOKEN is missing
  *   2. Throws clearly when POSTMARK_FROM_ADDRESS is missing
- *   3. Calls ServerClient.sendEmail with correct args and returns postmarkMessageId
+ *   3. Calls sendEmail with correct args and returns postmarkMessageId
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-
-// vi.hoisted runs before module resolution, making mockSendEmail available
-// inside the vi.mock factory which is also hoisted.
-const mockSendEmail = vi.hoisted(() => vi.fn());
-
-vi.mock("postmark", () => ({
-  ServerClient: vi.fn().mockImplementation(() => ({
-    sendEmail: mockSendEmail,
-  })),
-}));
-
-// Import the wrapper AFTER the mock is declared so the mock is applied.
-import { sendTransactional } from "../../artifacts/api-server/src/lib/email/postmark";
+import {
+  sendTransactional,
+  _setTestSendEmail,
+} from "../../artifacts/api-server/src/lib/email/postmark";
 
 const ORIG_SERVER_TOKEN = process.env.POSTMARK_SERVER_TOKEN;
 const ORIG_FROM_ADDRESS = process.env.POSTMARK_FROM_ADDRESS;
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  _setTestSendEmail(null); // ensure clean state
   process.env.POSTMARK_SERVER_TOKEN = "test-token-123";
   process.env.POSTMARK_FROM_ADDRESS = "noreply@example.com";
 });
 
 afterEach(() => {
+  _setTestSendEmail(null);
   if (ORIG_SERVER_TOKEN === undefined) {
     delete process.env.POSTMARK_SERVER_TOKEN;
   } else {
@@ -78,12 +75,14 @@ describe("Postmark sendTransactional", () => {
 
   it("calls ServerClient.sendEmail with correct args and returns postmarkMessageId", async () => {
     const fakeMessageId = "fake-postmark-guid-1234";
-    mockSendEmail.mockResolvedValueOnce({
+    const mockSendEmail = vi.fn().mockResolvedValueOnce({
       MessageID: fakeMessageId,
       SubmittedAt: "2026-05-02T00:00:00Z",
       ErrorCode: 0,
       Message: "OK",
     });
+
+    _setTestSendEmail(mockSendEmail);
 
     const result = await sendTransactional({
       to: "recipient@example.com",
@@ -100,7 +99,10 @@ describe("Postmark sendTransactional", () => {
     expect(callArgs.To).toBe("recipient@example.com");
     expect(callArgs.Subject).toBe("Alice mentioned you");
     expect(callArgs.Tag).toBe("system-mention");
-    expect(callArgs.Metadata).toMatchObject({ workspaceId: "ws-123", noteId: "note-456" });
+    expect(callArgs.Metadata).toMatchObject({
+      workspaceId: "ws-123",
+      noteId: "note-456",
+    });
 
     expect(result.postmarkMessageId).toBe(fakeMessageId);
     expect(result.submittedAt).toBeInstanceOf(Date);

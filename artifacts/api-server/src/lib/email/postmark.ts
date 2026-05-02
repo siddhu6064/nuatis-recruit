@@ -26,6 +26,21 @@ export type SendTransactionalResult = {
   submittedAt: Date;
 };
 
+type SendEmailFn = (params: Parameters<postmark.ServerClient["sendEmail"]>[0]) => Promise<postmark.Models.MessageSendingResponse>;
+
+/**
+ * Module-level test hook. vi.spyOn cannot intercept ES-module-internal calls,
+ * so tests inject a fake sendEmail function here instead.
+ * Always null in production — set/cleared only by the test suite.
+ * @internal
+ */
+let _testSendEmailOverride: SendEmailFn | null = null;
+
+/** @internal — for use in tests only */
+export function _setTestSendEmail(fn: SendEmailFn | null): void {
+  _testSendEmailOverride = fn;
+}
+
 function requireEnv(name: string): string {
   const val = process.env[name];
   if (!val) {
@@ -43,9 +58,11 @@ export async function sendTransactional(
   const token = requireEnv("POSTMARK_SERVER_TOKEN");
   const from = requireEnv("POSTMARK_FROM_ADDRESS");
 
-  const client = new postmark.ServerClient(token);
+  // Use test override when injected; otherwise build a real client.
+  const sendEmail: SendEmailFn =
+    _testSendEmailOverride ?? ((p) => new postmark.ServerClient(token).sendEmail(p));
 
-  const response = await client.sendEmail({
+  const response = await sendEmail({
     From: from,
     To: params.to,
     Subject: params.subject,
