@@ -6,6 +6,7 @@ import { useAuth } from "@workspace/replit-auth-web";
 import { useEffect } from "react";
 import Dashboard from "@/pages/dashboard";
 import SettingsMembers from "@/pages/settings-members";
+import SettingsEmail from "@/pages/settings-email";
 import AcceptInvite from "@/pages/accept-invite";
 import NotFound from "@/pages/not-found";
 import Clients from "@/pages/clients";
@@ -57,6 +58,7 @@ function Router() {
       <Route path="/search" component={Search} />
       <Route path="/tasks" component={Tasks} />
       <Route path="/settings/members" component={SettingsMembers} />
+      <Route path="/settings/email" component={SettingsEmail} />
       <Route path="/accept-invite" component={AcceptInvite} />
       <Route component={NotFound} />
     </Switch>

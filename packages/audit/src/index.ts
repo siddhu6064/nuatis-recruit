@@ -41,7 +41,9 @@ export type AuditAction =
   | "task.delete"
   | "candidate.merged"
   | "email.sent"
-  | "email.bounced";
+  | "email.bounced"
+  | "email_account.connected"
+  | "email_account.revoked";
 
 export type AuditParams = {
   workspaceId: string;

@@ -141,7 +141,42 @@ AI service (`artifacts/ai-server`) runs Python/FastAPI at port 9000 (`/ai` path)
 
 `notifications` table uses split RLS: INSERT policy checks workspace only; SELECT/UPDATE/DELETE policy scopes to `recipient_id = current_user_id`. `.returning()` on INSERT is treated as SELECT by PostgreSQL and is filtered out when inserting notifications for other users. Pattern: generate UUID client-side and omit `.returning()`.
 
-### Test Suite (133/133 passing — 21 test files)
+### Nylas Inbound Email Sync (Batch 6A.2)
+
+- **Nylas SDK**: `nylas@8.0.5` installed in `@workspace/api-server`
+- **Wrapper** (`artifacts/api-server/src/lib/email/nylas.ts`):
+  - `createAuthUrl()`, `exchangeCode()`, `getMessage()`, `revokeGrant()` — all Nylas SDK calls isolated here
+  - `_setTestNylasClient()` — module-level test hook (same pattern as Postmark)
+- **State token** (`artifacts/api-server/src/lib/email/state-token.ts`):
+  - HMAC-SHA256 signed `base64url(payload).hex_sig` format; key = `NYLAS_WEBHOOK_SECRET`; 5-min expiry + nonce + workspace validation
+- **OAuth routes** (`email-auth.ts`):
+  - `GET /api/email/auth/start` — generates signed state → redirects to Nylas Hosted Auth
+  - `GET /api/email/auth/callback` — validates state + exchanges code → upserts `connected_email_accounts` → redirects to `/settings/email`
+- **Account management** (`email-accounts.ts`):
+  - `GET /api/email/accounts` — list connected accounts (owner sees all; others see own)
+  - `POST /api/email/accounts/:id/disconnect` — revokes Nylas grant + marks row `revoked`
+- **Webhook** (`webhooks/nylas.ts`):
+  - `POST /api/webhooks/nylas` — HMAC-SHA256 validation via `x-nylas-signature` header
+  - Routes `message.created` → `nylas.message_received` Inngest event; `grant.expired` → `nylas.grant_expired`; all others silently ignored
+  - Raw body captured via `express.json({ verify: (req, res, buf) => { req.rawBody = buf } })` in `app.ts`
+- **Ingest logic** (`email/ingest-nylas-message.ts`) — exported standalone for direct test use:
+  - Finds active connected account by `nylas_grant_id`
+  - Calls `getMessage()`, skips outbound (from === account email), matches candidate via `$email = ANY(candidates.emails)`
+  - Upserts `email_threads` on `nylas_thread_id` (partial unique index); inserts `email_messages` with `ON CONFLICT DO NOTHING` on `nylas_message_id`
+- **Inngest functions** (added to `inngest.ts`):
+  - `ingestNylasMessageJob` (`nylas.message_received`) — delegates to `ingestNylasMessageFn`
+  - `handleGrantExpiredJob` (`nylas.grant_expired`) — sets account status='error', writes audit row
+- **Read routes** (added to `email.ts`):
+  - `GET /api/candidates/:id/email-threads` — threads ordered by `last_message_at DESC`
+  - `GET /api/email/threads/:id/messages` — messages ordered by `sent_at ASC`
+- **DB**: `migrate:rls` adds `email_threads_nylas_thread_id_uidx` partial unique index (needed for upsert)
+- **Audit actions**: `email_account.connected`, `email_account.revoked` added to `@workspace/audit`
+- **Frontend**:
+  - `/settings/email` page — list connected accounts, connect/disconnect buttons, OAuth redirect flow
+  - `CommunicationsTab` — shows thread list + message bubbles (inbound left, outbound right)
+- **Env vars required for production**: `NYLAS_CLIENT_ID`, `NYLAS_CLIENT_SECRET`, `NYLAS_WEBHOOK_SECRET`, optionally `NYLAS_API_URI`; dev has `NYLAS_WEBHOOK_SECRET` set to a test placeholder
+
+### Test Suite (150/150 passing — 24 test files)
 
 - `tests/security/rls.test.ts` — 20 RLS isolation tests (all tables including email tables)
 - `tests/audit/audit-log.test.ts` — 4 trigger audit tests
@@ -163,6 +198,9 @@ AI service (`artifacts/ai-server`) runs Python/FastAPI at port 9000 (`/ai` path)
 - `tests/dedup/embedding-match.test.ts` — 3 embedding dedup tests
 - `tests/dedup/merge.test.ts` — 10 candidate merge tests
 - `tests/email/postmark-send.test.ts` — 3 Postmark wrapper unit tests
-- `tests/email/webhook.test.ts` — 4 Postmark webhook tests (2 auth enforcement + 2 bounce handling; bounce path skips gracefully when POSTMARK_WEBHOOK_USERNAME/PASSWORD env vars are absent)
+- `tests/email/webhook.test.ts` — 4 Postmark webhook tests (2 auth enforcement + 2 bounce handling)
+- `tests/email/nylas-wrapper.test.ts` — 7 Nylas wrapper + state-token unit tests
+- `tests/email/nylas-webhook.test.ts` — 5 HMAC webhook validation tests
+- `tests/email/nylas-ingest.test.ts` — 5 ingest logic tests (happy path, candidate match, idempotency, outbound skip, RLS)
 
 See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.

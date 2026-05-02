@@ -9,8 +9,9 @@
  * email.mention function which calls the email service directly.
  */
 import { Router, type IRouter, type Request, type Response } from "express";
-import { db, emailMessagesTable, auditLogsTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
+import { db, emailMessagesTable, emailThreadsTable, auditLogsTable } from "@workspace/db";
+import { and, eq, desc } from "drizzle-orm";
+import { requireAuth } from "@workspace/auth";
 import { sendTransactional } from "../lib/email/postmark";
 import { renderMentionEmail } from "../lib/email/templates/mention";
 import { logger } from "../lib/logger";
@@ -134,6 +135,66 @@ router.post("/email/send-system", async (req: Request, res: Response) => {
     logger.error({ err }, "Failed to send system email");
     res.status(500).json({ error: String(err) });
   }
+});
+
+// ── GET /api/candidates/:id/email-threads ─────────────────────────────────
+
+router.get("/candidates/:id/email-threads", requireAuth, async (req: Request, res: Response) => {
+  const { id: candidateId } = req.params as { id: string };
+  const txDb = req.db ?? db;
+
+  const threads = await txDb
+    .select({
+      id: emailThreadsTable.id,
+      subject: emailThreadsTable.subject,
+      lastMessageAt: emailThreadsTable.lastMessageAt,
+      messageCount: emailThreadsTable.messageCount,
+      nylasThreadId: emailThreadsTable.nylasThreadId,
+      createdAt: emailThreadsTable.createdAt,
+    })
+    .from(emailThreadsTable)
+    .where(eq(emailThreadsTable.candidateId, candidateId))
+    .orderBy(desc(emailThreadsTable.lastMessageAt));
+
+  res.json({
+    threads: threads.map((t) => ({
+      ...t,
+      lastMessageAt: t.lastMessageAt?.toISOString() ?? null,
+      createdAt: t.createdAt?.toISOString() ?? null,
+    })),
+  });
+});
+
+// ── GET /api/email/threads/:id/messages ───────────────────────────────────
+
+router.get("/email/threads/:id/messages", requireAuth, async (req: Request, res: Response) => {
+  const { id: threadId } = req.params as { id: string };
+  const txDb = req.db ?? db;
+
+  const messages = await txDb
+    .select({
+      id: emailMessagesTable.id,
+      direction: emailMessagesTable.direction,
+      fromAddress: emailMessagesTable.fromAddress,
+      toAddresses: emailMessagesTable.toAddresses,
+      ccAddresses: emailMessagesTable.ccAddresses,
+      subject: emailMessagesTable.subject,
+      bodyText: emailMessagesTable.bodyText,
+      bodyHtml: emailMessagesTable.bodyHtml,
+      sentAt: emailMessagesTable.sentAt,
+      status: emailMessagesTable.status,
+      nylasMessageId: emailMessagesTable.nylasMessageId,
+    })
+    .from(emailMessagesTable)
+    .where(eq(emailMessagesTable.threadId, threadId))
+    .orderBy(emailMessagesTable.sentAt);
+
+  res.json({
+    messages: messages.map((m) => ({
+      ...m,
+      sentAt: m.sentAt?.toISOString() ?? null,
+    })),
+  });
 });
 
 export default router;

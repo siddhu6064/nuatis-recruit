@@ -602,6 +602,9 @@ CREATE INDEX IF NOT EXISTS email_messages_workspace_thread_sent_idx
 CREATE UNIQUE INDEX IF NOT EXISTS email_messages_nylas_message_id_uidx
   ON email_messages (nylas_message_id)
   WHERE nylas_message_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS email_threads_nylas_thread_id_uidx
+  ON email_threads (nylas_thread_id)
+  WHERE nylas_thread_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS connected_email_accounts_workspace_user_email_uidx
   ON connected_email_accounts (workspace_id, user_id, email_address);
 `;

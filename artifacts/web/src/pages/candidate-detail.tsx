@@ -336,7 +336,7 @@ export default function CandidateDetail() {
               </TabsContent>
 
               <TabsContent value="communications" className="mt-4">
-                <CommunicationsTab emailV1Enabled={workspaceData?.emailV1Enabled ?? false} />
+                <CommunicationsTab candidateId={id!} emailV1Enabled={workspaceData?.emailV1Enabled ?? false} />
               </TabsContent>
 
               <TabsContent value="notes" className="mt-4">

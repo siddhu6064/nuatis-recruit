@@ -31,7 +31,13 @@ app.use(
 
 app.use(cors({ credentials: true, origin: true }));
 app.use(cookieParser());
-app.use(express.json());
+app.use(
+  express.json({
+    verify: (_req, _res, buf) => {
+      (_req as typeof _req & { rawBody?: Buffer }).rawBody = buf;
+    },
+  }),
+);
 app.use(express.urlencoded({ extended: true }));
 
 // 1. Resolve session → req.user

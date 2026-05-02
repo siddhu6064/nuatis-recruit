@@ -413,4 +413,92 @@ export const sendSystemMentionEmailJob = inngest.createFunction(
   },
 );
 
-export const functions = [parseResumeJob, parseJobJob, scoreApplicationJob, stageEnteredJob, sendSystemMentionEmailJob];
+// ── Event types: nylas ─────────────────────────────────────────────────────
+
+type NylasMessageReceivedEvent = {
+  name: "nylas.message_received";
+  data: {
+    grantId: string;
+    messageId: string;
+    threadId: string;
+  };
+};
+
+type NylasGrantExpiredEvent = {
+  name: "nylas.grant_expired";
+  data: {
+    grantId: string;
+  };
+};
+
+// ── Function: nylas.message_received ──────────────────────────────────────
+// Delegates core logic to ingestNylasMessageFn for direct testability.
+
+export const ingestNylasMessageJob = inngest.createFunction(
+  {
+    id: "ingest-nylas-message",
+    name: "Ingest inbound Nylas message",
+    retries: 3,
+    triggers: [{ event: "nylas.message_received" }],
+  },
+  async ({ event, step }) => {
+    const { grantId, messageId, threadId } =
+      (event as unknown as NylasMessageReceivedEvent).data;
+
+    const result = await step.run("ingest-message", async () => {
+      const { ingestNylasMessageFn } = await import("./email/ingest-nylas-message");
+      return ingestNylasMessageFn({ grantId, messageId, threadId });
+    });
+
+    logger.info({ messageId, result }, "nylas.message_received processed");
+    return result;
+  },
+);
+
+// ── Function: nylas.grant_expired ─────────────────────────────────────────
+
+export const handleGrantExpiredJob = inngest.createFunction(
+  {
+    id: "handle-grant-expired",
+    name: "Mark connected email account as error on grant expiry",
+    retries: 2,
+    triggers: [{ event: "nylas.grant_expired" }],
+  },
+  async ({ event, step }) => {
+    const { grantId } = (event as unknown as NylasGrantExpiredEvent).data;
+
+    await step.run("mark-account-error", async () => {
+      await dbQuery(
+        `UPDATE connected_email_accounts SET status = 'error' WHERE nylas_grant_id = $1`,
+        [grantId],
+      );
+
+      const res = await dbQuery(
+        `SELECT workspace_id, email_address FROM connected_email_accounts WHERE nylas_grant_id = $1 LIMIT 1`,
+        [grantId],
+      );
+      if (res.rows.length) {
+        const { workspace_id: workspaceId, email_address: emailAddress } =
+          res.rows[0] as { workspace_id: string; email_address: string };
+        await dbQuery(
+          `INSERT INTO audit_logs (workspace_id, action, target_type, diff_json)
+           VALUES ($1, 'email_account.revoked', 'connected_email_account', $2)`,
+          [workspaceId, JSON.stringify({ grantId, emailAddress, reason: "grant_expired" })],
+        );
+        logger.info({ grantId, workspaceId, emailAddress }, "Grant expired — account marked error");
+      }
+    });
+
+    return { grantId };
+  },
+);
+
+export const functions = [
+  parseResumeJob,
+  parseJobJob,
+  scoreApplicationJob,
+  stageEnteredJob,
+  sendSystemMentionEmailJob,
+  ingestNylasMessageJob,
+  handleGrantExpiredJob,
+];
