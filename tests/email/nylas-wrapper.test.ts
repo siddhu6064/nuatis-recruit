@@ -90,6 +90,7 @@ describe("Nylas wrapper — test hook", () => {
       }),
       getMessage: async () => mockMessage,
       revokeGrant: async () => undefined,
+      sendMessage: async () => ({ nylasMessageId: "nylas_sent_test", sentAt: new Date() }),
     };
     _setTestNylasClient(mockClient);
 

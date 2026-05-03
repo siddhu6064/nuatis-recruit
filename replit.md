@@ -176,7 +176,17 @@ AI service (`artifacts/ai-server`) runs Python/FastAPI at port 9000 (`/ai` path)
   - `CommunicationsTab` — shows thread list + message bubbles (inbound left, outbound right)
 - **Env vars required for production**: `NYLAS_CLIENT_ID`, `NYLAS_CLIENT_SECRET`, `NYLAS_WEBHOOK_SECRET`, optionally `NYLAS_API_URI`; dev has `NYLAS_WEBHOOK_SECRET` set to a test placeholder
 
-### Test Suite (150/150 passing — 24 test files)
+### Outbound Reply (Batch 6A.3)
+
+- **`nylas.ts`**: `sendMessage(grantId, { to, subject, body, replyToMessageId })` added to `NylasClientInterface` and real client. Calls `nylas.messages.send({ identifier, requestBody: { to, subject, body, replyToMessageId, isPlaintext: true } })`. Returns `{ nylasMessageId, sentAt }`. Same test hook pattern.
+- **`send-reply.ts`** (`lib/email/send-reply.ts`): Extracted core reply logic (callable directly by tests — same pattern as `ingest-nylas-message.ts`).
+  - `computeReplySubject(s)` — strips all leading `Re:/RE:/re:` prefixes (case-insensitive) and prepends exactly one `"Re: "`.
+  - `sendReplyFn({ threadId, workspaceId, userId, body })` → `SendReplyResult` discriminated union.
+  - Flow: lookup thread → find most recent inbound → resolve sender's active grant → INSERT `email_messages` (status=`'queued'`) + UPDATE `email_threads` in a single DB transaction → call `sendMessage` → UPDATE to `'sent'` (success) or `'failed'` + `bounce_reason` (error) → audit log + activity row.
+- **`POST /api/email/threads/:id/reply`** — thin HTTP wrapper in `email.ts`. Returns 404/409/422/500 per discriminated result code. 409 carries `code: "grant_missing"` for the UI CTA.
+- **`CommunicationsTab`** — `ThreadDetail` now has a Reply button that opens an inline plain-`<textarea>` composer (no new deps; Tiptap intentionally NOT used here). Cancel and Send buttons; `⌘↵` shortcut. 409 grant-missing renders amber callout with `/settings/email` link. Outbound `MessageBubble` status indicators: `'queued'` → Clock icon, `'failed'` → AlertCircle + Retry button (re-POSTs with `message.bodyText`), `'sent'` → no indicator (clean).
+
+### Test Suite (161/161 passing — 25 test files)
 
 - `tests/security/rls.test.ts` — 20 RLS isolation tests (all tables including email tables)
 - `tests/audit/audit-log.test.ts` — 4 trigger audit tests
@@ -202,5 +212,6 @@ AI service (`artifacts/ai-server`) runs Python/FastAPI at port 9000 (`/ai` path)
 - `tests/email/nylas-wrapper.test.ts` — 7 Nylas wrapper + state-token unit tests
 - `tests/email/nylas-webhook.test.ts` — 5 HMAC webhook validation tests
 - `tests/email/nylas-ingest.test.ts` — 5 ingest logic tests (happy path, candidate match, idempotency, outbound skip, RLS)
+- `tests/email/nylas-reply.test.ts` — 11 reply tests (sendMessage wrapper args + replyToMessageId, computeReplySubject × 4 de-dup cases, happy path row/thread/audit, grant_missing, send_failed queued-row pattern, cross-workspace isolation, no_inbound_message)
 
 See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.

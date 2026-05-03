@@ -1,5 +1,5 @@
 /**
- * Nylas v3 API wrapper (using @nylas/nylas SDK v8).
+ * Nylas v3 API wrapper (using nylas SDK v8).
  *
  * ONLY this file (and the Inngest ingest handler) may import from "nylas".
  * All other code goes through these exported functions.
@@ -38,11 +38,32 @@ export type NylasGrantInfo = {
   provider: string; // "google" | "microsoft" | "imap" | ...
 };
 
+export type NylasSendParams = {
+  to: string;
+  subject: string;
+  body: string; // plaintext this batch; isPlaintext=true sent to Nylas
+  replyToMessageId?: string;
+};
+
+export type NylasSendResult = {
+  nylasMessageId: string;
+  sentAt: Date;
+};
+
 export type NylasClientInterface = {
   createAuthUrl(state: string, redirectUri: string): string;
   exchangeCode(code: string, redirectUri: string): Promise<NylasGrantInfo>;
   getMessage(grantId: string, messageId: string): Promise<NylasMessage>;
   revokeGrant(grantId: string): Promise<void>;
+  /**
+   * Send a message via the grantId's mailbox.
+   *
+   * Nylas v8 SDK: nylas.messages.send({ identifier, requestBody })
+   * requestBody.replyToMessageId sets In-Reply-To and References headers so
+   * the mail is correctly threaded in the recipient's and sender's mailbox.
+   * isPlaintext=true tells Nylas to send a plain-text-only MIME part.
+   */
+  sendMessage(grantId: string, params: NylasSendParams): Promise<NylasSendResult>;
 };
 
 // ── Module-level test hook (same pattern as postmark) ──────────────────────
@@ -117,10 +138,27 @@ function makeRealClient(): NylasClientInterface {
       try {
         await nylas.auth.revoke(grantId);
       } catch (err) {
-        // Log but don't throw — Nylas may already have revoked it
         const message = err instanceof Error ? err.message : String(err);
         throw new Error(`[nylas] revokeGrant failed: ${message}`);
       }
+    },
+
+    async sendMessage(grantId: string, params: NylasSendParams): Promise<NylasSendResult> {
+      const response = await nylas.messages.send({
+        identifier: grantId,
+        requestBody: {
+          to: [{ email: params.to }],
+          subject: params.subject,
+          body: params.body,
+          replyToMessageId: params.replyToMessageId,
+          isPlaintext: true,
+        },
+      });
+      const data = response.data as unknown as Record<string, unknown>;
+      return {
+        nylasMessageId: data.id as string,
+        sentAt: data.date ? new Date((data.date as number) * 1000) : new Date(),
+      };
     },
   };
 }
@@ -151,4 +189,11 @@ export async function getMessage(
 
 export async function revokeGrant(grantId: string): Promise<void> {
   return getClient().revokeGrant(grantId);
+}
+
+export async function sendMessage(
+  grantId: string,
+  params: NylasSendParams,
+): Promise<NylasSendResult> {
+  return getClient().sendMessage(grantId, params);
 }

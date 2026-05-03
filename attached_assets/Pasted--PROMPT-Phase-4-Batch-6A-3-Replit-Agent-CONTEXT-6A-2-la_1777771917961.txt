@@ -1,0 +1,144 @@
+▶ PROMPT [Phase 4 · Batch 6A.3 · Replit Agent]
+
+CONTEXT
+6A.2 landed Nylas inbound: OAuth connect, webhook, thread/message
+ingest, read-only Communications tab. 150/150 tests passing. This batch
+adds OUTBOUND REPLY — a recruiter on a candidate's Communications tab
+clicks Reply on an inbound thread, composes plaintext, sends through
+their own connected Nylas grant. Net-new compose (cold mail to a
+candidate with no prior thread) is 6A.4 — out of scope here.
+
+Project structure: lib/* and artifacts/*. Nylas wrapper, ingest, and
+test hooks already exist from 6A.2 — extend them, don't rebuild.
+
+GOAL
+Recruiter clicks Reply on an inbound thread → types a plaintext message
+→ clicks Send → email_messages row written direction='outbound'
+status='sent' with nylas_message_id and in_reply_to populated → message
+arrives in the candidate's actual inbox AND appears in the recruiter's
+own connected mailbox sent folder AND renders correctly threaded in
+Communications tab on next refresh.
+
+SCOPE — BUILD THIS
+
+1. Extend lib/email/nylas.ts wrapper with sendMessage(grantId, {
+   to, cc, bcc, subject, body, replyToMessageId, threadId }) — wraps
+   the v8 SDK send call. Pass replyToMessageId so Nylas sets In-Reply-To
+   and References headers correctly. Returns {nylasMessageId, sentAt}.
+
+2. POST /api/email/threads/:id/reply route. Body: { body: string }
+   (plaintext only this batch). Server-side flow:
+   • Authenticate; resolve current user.
+   • Look up the thread; verify it belongs to the workspace via RLS.
+   • Find the most recent inbound message in the thread to use as the
+     reply target — that's where In-Reply-To points.
+   • Resolve the SENDING user's grant: connected_email_accounts row
+     where user_id=current user, status='active'. If none, return
+     409 with a code the UI uses to show a "Connect inbox" CTA.
+   • Compute reply To = original message from_address; Cc/Bcc empty
+     this batch; Subject = original subject prefixed with "Re: " if
+     not already.
+   • INSERT email_messages with status='queued' BEFORE the Nylas call.
+     Direction='outbound', from_address=grant.email_address, in_reply_to
+     populated, message body in body_text. Capture the new row id.
+   • Call nylas.sendMessage. On success: UPDATE email_messages SET
+     status='sent', nylas_message_id, sent_at. On failure: UPDATE
+     status='failed', bounce_reason=<error>. Return error to client
+     with the failed-row id so UI can show "Retry."
+   • Update email_threads.last_message_at and message_count in same tx
+     as the initial queued INSERT.
+   • Audit: action='email.sent' with metadata {threadId, grantId,
+     messageId}. Activity log on the candidate (if thread has a
+     candidate_id): type='email_sent', payload={subject, fromUser,
+     messageId}.
+
+3. Reply composer UI inside CommunicationsTab. Per-thread "Reply" button
+   below the conversation. Click opens an inline composer (Tiptap or
+   plain textarea — pick whichever already exists in the codebase from
+   notes; do NOT install a new editor). Send and Cancel buttons. While
+   sending, button disabled with spinner. On success: optimistic insert
+   of the outbound bubble, refetch on settle. On 409 grant-missing: in-
+   line callout linking to /settings/email.
+
+4. Outbound message bubble styling. Right-aligned, distinguishable from
+   inbound. Status indicator: 'queued' (clock icon, gray), 'sent' (no
+   indicator), 'failed' (red, with Retry button that POSTs the same
+   route again with the same body). Match existing visual language.
+
+5. Tests (extend existing suites):
+   • sendMessage wrapper called with correct args including
+     replyToMessageId (mock outbound HTTP)
+   • Reply route: happy path → email_messages row sent, thread updated
+   • Reply route: no grant → 409 with code grant_missing
+   • Reply route: Nylas send fails → row left at status='failed' with
+     bounce_reason, audit not written
+   • Reply route: cross-workspace thread access blocked by RLS
+   • Idempotency note: this batch does NOT need full idempotency
+     because user-driven sends aren't retried by Nylas — but DO ensure
+     the queued-row pattern means a network failure at send-time
+     doesn't leave the DB inconsistent
+   Expect 150 → ~158.
+
+SCOPE — DO NOT BUILD
+
+- No net-new compose (Compose button on candidate detail to start a
+  fresh thread). 6A.4.
+- No templates, no merge fields, no snippet library.
+- No tracking pixels, no link rewriting, no open/click tracking.
+- No schedule-send, no send-later, no time-zone-aware delay.
+- No attachments — uploads or inline images. 6A.5.
+- No CC/BCC fields in the composer this batch — keep it minimal.
+- No reply-detection workflow events firing on inbound replies.
+- No quoted-reply collapsing or HTML rendering of the original message.
+- No bulk send, no sequences, no campaign view.
+- No re-auth banner for expired grants — track as known gap, don't
+  build here.
+- Do NOT change candidate-matching logic from 6A.2.
+
+TECH CONSTRAINTS
+
+- Reuse the existing Nylas wrapper and its test hook.
+- Reuse Tiptap setup from notes if present, OR plain textarea — do not
+  add a new dependency.
+- Outbound row MUST be inserted before the Nylas call; if Nylas fails,
+  the row stays as 'failed', queryable for Retry. This pattern matches
+  Postmark in 6A.1.
+- Sender = current user's grant only. If recruiter X replies to a
+  thread originally received via recruiter Y's inbox, the reply goes
+  through X's grant (sender becomes X's email). Nylas threading
+  preserves the conversation via In-Reply-To headers.
+- RLS unchanged. Replit Auth abstraction stays clean — grep for
+  @replit/(repl-auth|auth)|passport-replit outside lib/auth/ stays
+  empty.
+- ML-engineering territory: nothing here is ML.
+
+ACCEPTANCE
+
+- pnpm test green at ~158.
+- Typecheck clean.
+- grep '@nylas' only hits lib/email/nylas.ts and the Inngest handler.
+- grep '@replit/repl-auth\\|@replit/auth\\|passport-replit' outside
+  lib/auth/ returns zero.
+- Manual smoke (when secrets are in place): connect a real inbox →
+  receive a real test email from a candidate-seeded address → click
+  Reply → send a plaintext message → verify (a) message appears in
+  the connected mailbox's Sent folder, (b) candidate inbox receives it
+  with correct In-Reply-To threading, (c) Communications tab shows the
+  outbound bubble after refresh.
+
+REPORT WHAT YOU BUILT
+
+- Files touched (paths only).
+- Test count delta.
+- Schema additions if any (ideally none).
+- How replyToMessageId maps to Nylas v3 / v8 SDK send params —
+  cite the SDK signature you used.
+- Subject de-duplication rule used (Re: vs Re: Re: vs RE:).
+- Deviations from this prompt — flag them.
+- Open questions.
+
+HARD STOP
+
+Stop after scope. Do not start net-new compose. Do not build templates,
+tracking, schedule-send, attachments. Do not propose 6A.4 or 6B. Do not
+offer "also wire X." Wait for next prompt.

@@ -62,6 +62,7 @@ function installMockClient(opts: {
     getMessage: (_grantId, messageId) =>
       makeMockMessage({ id: messageId, ...opts }),
     revokeGrant: async () => undefined,
+    sendMessage: async () => ({ nylasMessageId: "nylas_sent_noop", sentAt: new Date() }),
   };
   _setTestNylasClient(mock);
 }

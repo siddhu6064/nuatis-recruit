@@ -1,6 +1,9 @@
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Mail, ChevronRight, Loader2, Inbox } from "lucide-react";
+import { useState, useRef, useEffect } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  Mail, ChevronRight, Loader2, Inbox, Send, Clock,
+  AlertCircle, CornerDownLeft, X,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Link } from "wouter";
@@ -29,6 +32,7 @@ type EmailMessage = {
   sentAt: string | null;
   status: string;
   nylasMessageId: string | null;
+  inReplyTo?: string | null;
 };
 
 type Props = {
@@ -36,32 +40,236 @@ type Props = {
   emailV1Enabled: boolean;
 };
 
-function MessageBubble({ message }: { message: EmailMessage }) {
+// ── Message bubble ─────────────────────────────────────────────────────────
+
+function StatusIndicator({
+  status,
+  onRetry,
+  bodyText,
+}: {
+  status: string;
+  onRetry: (body: string) => void;
+  bodyText: string;
+}) {
+  if (status === "queued") {
+    return (
+      <span className="flex items-center gap-1 text-xs text-muted-foreground">
+        <Clock className="h-3 w-3" /> Sending…
+      </span>
+    );
+  }
+  if (status === "failed") {
+    return (
+      <span className="flex items-center gap-2">
+        <span className="flex items-center gap-1 text-xs text-destructive">
+          <AlertCircle className="h-3 w-3" /> Failed
+        </span>
+        <button
+          className="text-xs underline text-destructive hover:opacity-70"
+          onClick={() => onRetry(bodyText)}
+        >
+          Retry
+        </button>
+      </span>
+    );
+  }
+  return null;
+}
+
+function MessageBubble({
+  message,
+  onRetry,
+}: {
+  message: EmailMessage;
+  onRetry: (body: string) => void;
+}) {
   const isInbound = message.direction === "inbound";
+  const isFailed = !isInbound && message.status === "failed";
+  const isQueued = !isInbound && message.status === "queued";
+
   return (
     <div className={`flex ${isInbound ? "justify-start" : "justify-end"}`}>
       <div
         className={`max-w-[80%] rounded-lg px-4 py-3 text-sm space-y-1 ${
           isInbound
             ? "bg-muted border"
+            : isFailed
+            ? "bg-destructive/10 border border-destructive/30"
+            : isQueued
+            ? "bg-muted border border-dashed opacity-70"
             : "bg-primary text-primary-foreground"
         }`}
       >
-        <p className="text-xs opacity-60 font-medium">
-          {isInbound ? message.fromAddress : `You → ${message.toAddresses[0] ?? ""}`}
+        <p
+          className={`text-xs font-medium ${
+            isInbound || isFailed || isQueued ? "opacity-60" : "opacity-70"
+          }`}
+        >
+          {isInbound
+            ? message.fromAddress
+            : `You → ${message.toAddresses[0] ?? ""}`}
         </p>
-        <p className="leading-relaxed whitespace-pre-wrap">{message.bodyText || "(no preview)"}</p>
-        <p className="text-xs opacity-50 text-right">
-          {message.sentAt
-            ? formatDistanceToNow(new Date(message.sentAt), { addSuffix: true })
-            : ""}
+        <p className="leading-relaxed whitespace-pre-wrap">
+          {message.bodyText || "(no preview)"}
         </p>
+        <div className="flex items-center justify-end gap-2 pt-0.5">
+          {!isInbound && (
+            <StatusIndicator
+              status={message.status}
+              onRetry={onRetry}
+              bodyText={message.bodyText}
+            />
+          )}
+          <p
+            className={`text-xs ${
+              isInbound || isFailed || isQueued
+                ? "opacity-50"
+                : "opacity-60"
+            }`}
+          >
+            {message.sentAt
+              ? formatDistanceToNow(new Date(message.sentAt), { addSuffix: true })
+              : ""}
+          </p>
+        </div>
       </div>
     </div>
   );
 }
 
+// ── Reply composer ─────────────────────────────────────────────────────────
+
+function ReplyComposer({
+  threadId,
+  initialBody,
+  onClose,
+  onSent,
+}: {
+  threadId: string;
+  initialBody?: string;
+  onClose: () => void;
+  onSent: () => void;
+}) {
+  const [body, setBody] = useState(initialBody ?? "");
+  const [sending, setSending] = useState(false);
+  const [grantMissing, setGrantMissing] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const queryClient = useQueryClient();
+
+  useEffect(() => {
+    textareaRef.current?.focus();
+  }, []);
+
+  async function handleSend() {
+    const trimmed = body.trim();
+    if (!trimmed || sending) return;
+
+    setSending(true);
+    setErrorMsg(null);
+    setGrantMissing(false);
+
+    try {
+      const r = await fetch(`${BASE}/api/email/threads/${threadId}/reply`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ body: trimmed }),
+      });
+
+      if (r.status === 409) {
+        setGrantMissing(true);
+        return;
+      }
+
+      if (!r.ok) {
+        const data = await r.json() as Record<string, unknown>;
+        setErrorMsg((data.error as string | undefined) ?? "Send failed");
+        return;
+      }
+
+      // Invalidate both thread list and message list on success
+      void queryClient.invalidateQueries({ queryKey: ["email-thread-messages", threadId] });
+      void queryClient.invalidateQueries({ queryKey: ["email-threads"] });
+      onSent();
+    } catch (err) {
+      setErrorMsg("Network error — please try again");
+    } finally {
+      setSending(false);
+    }
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+      void handleSend();
+    }
+  }
+
+  if (grantMissing) {
+    return (
+      <div className="border rounded-lg p-4 bg-amber-50 dark:bg-amber-950/30 text-sm flex items-start gap-3">
+        <AlertCircle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
+        <div className="flex-1">
+          <p className="font-medium text-amber-800 dark:text-amber-200">No connected inbox</p>
+          <p className="text-amber-700 dark:text-amber-300 mt-0.5">
+            <Link href="/settings/email" className="underline">
+              Connect your inbox
+            </Link>{" "}
+            to send replies.
+          </p>
+        </div>
+        <button onClick={() => setGrantMissing(false)}>
+          <X className="h-4 w-4 text-amber-500 hover:opacity-70" />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="border rounded-lg p-3 space-y-2 bg-background">
+      <textarea
+        ref={textareaRef}
+        value={body}
+        onChange={(e) => setBody(e.target.value)}
+        onKeyDown={handleKeyDown}
+        placeholder="Write a reply… (⌘↵ to send)"
+        rows={4}
+        className="w-full resize-none text-sm rounded border-0 focus:outline-none bg-transparent placeholder:text-muted-foreground"
+      />
+      {errorMsg && (
+        <p className="text-xs text-destructive">{errorMsg}</p>
+      )}
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-muted-foreground">Plain text</p>
+        <div className="flex gap-2">
+          <Button variant="ghost" size="sm" onClick={onClose} disabled={sending}>
+            Cancel
+          </Button>
+          <Button
+            size="sm"
+            disabled={!body.trim() || sending}
+            onClick={() => void handleSend()}
+          >
+            {sending ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <>
+                <Send className="h-4 w-4 mr-1.5" />
+                Send
+              </>
+            )}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── Thread detail (messages + composer) ───────────────────────────────────
+
 function ThreadDetail({ threadId }: { threadId: string }) {
+  const [composerOpen, setComposerOpen] = useState(false);
+  const [retryBody, setRetryBody] = useState<string | undefined>(undefined);
   const { data, isLoading } = useQuery<{ messages: EmailMessage[] }>({
     queryKey: ["email-thread-messages", threadId],
     queryFn: async () => {
@@ -73,6 +281,16 @@ function ThreadDetail({ threadId }: { threadId: string }) {
     },
   });
 
+  function openRetry(body: string) {
+    setRetryBody(body);
+    setComposerOpen(true);
+  }
+
+  function handleSent() {
+    setComposerOpen(false);
+    setRetryBody(undefined);
+  }
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-10">
@@ -83,22 +301,47 @@ function ThreadDetail({ threadId }: { threadId: string }) {
 
   const messages = data?.messages ?? [];
 
-  if (!messages.length) {
-    return (
-      <div className="py-8 text-center text-sm text-muted-foreground">
-        No messages in this thread.
-      </div>
-    );
-  }
-
   return (
-    <div className="flex flex-col gap-3 py-3">
-      {messages.map((msg) => (
-        <MessageBubble key={msg.id} message={msg} />
-      ))}
+    <div className="flex flex-col h-full">
+      {/* Message list — scrollable */}
+      <div className="flex-1 overflow-y-auto py-3 space-y-3 min-h-0">
+        {messages.length === 0 ? (
+          <p className="text-center text-sm text-muted-foreground py-8">
+            No messages in this thread.
+          </p>
+        ) : (
+          messages.map((msg) => (
+            <MessageBubble key={msg.id} message={msg} onRetry={openRetry} />
+          ))
+        )}
+      </div>
+
+      {/* Reply area — pinned at bottom */}
+      <div className="border-t pt-3 pb-2 space-y-2 shrink-0">
+        {composerOpen ? (
+          <ReplyComposer
+            threadId={threadId}
+            initialBody={retryBody}
+            onClose={() => { setComposerOpen(false); setRetryBody(undefined); }}
+            onSent={handleSent}
+          />
+        ) : (
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-full"
+            onClick={() => setComposerOpen(true)}
+          >
+            <CornerDownLeft className="h-4 w-4 mr-2" />
+            Reply
+          </Button>
+        )}
+      </div>
     </div>
   );
 }
+
+// ── Main tab ───────────────────────────────────────────────────────────────
 
 export function CommunicationsTab({ candidateId, emailV1Enabled }: Props) {
   const [selectedThread, setSelectedThread] = useState<string | null>(null);
@@ -194,7 +437,7 @@ export function CommunicationsTab({ candidateId, emailV1Enabled }: Props) {
       </div>
 
       {/* Message view */}
-      <div className="flex-1 border rounded-lg overflow-y-auto px-4">
+      <div className="flex-1 border rounded-lg overflow-hidden px-4 flex flex-col">
         {selectedThread ? (
           <ThreadDetail threadId={selectedThread} />
         ) : (

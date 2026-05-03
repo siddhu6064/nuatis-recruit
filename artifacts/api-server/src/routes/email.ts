@@ -14,6 +14,7 @@ import { and, eq, desc } from "drizzle-orm";
 import { requireAuth } from "@workspace/auth";
 import { sendTransactional } from "../lib/email/postmark";
 import { renderMentionEmail } from "../lib/email/templates/mention";
+import { sendReplyFn } from "../lib/email/send-reply";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
@@ -134,6 +135,50 @@ router.post("/email/send-system", async (req: Request, res: Response) => {
   } catch (err) {
     logger.error({ err }, "Failed to send system email");
     res.status(500).json({ error: String(err) });
+  }
+});
+
+// ── POST /api/email/threads/:id/reply ─────────────────────────────────────
+
+router.post("/email/threads/:id/reply", requireAuth, async (req: Request, res: Response) => {
+  const user = req.user!;
+  const { id: threadId } = req.params as { id: string };
+  const { body } = req.body as { body?: string };
+
+  if (!body?.trim()) {
+    res.status(400).json({ error: "body is required" });
+    return;
+  }
+
+  try {
+    const result = await sendReplyFn({
+      threadId,
+      workspaceId: user.workspaceId,
+      userId: user.id,
+      body: body.trim(),
+    });
+
+    if (!result.ok) {
+      const statusCode =
+        result.code === "not_found" ? 404
+        : result.code === "grant_missing" ? 409
+        : result.code === "no_inbound_message" ? 422
+        : 500;
+
+      res.status(statusCode).json({
+        error: result.code,
+        code: result.code,
+        ...(result.code === "send_failed"
+          ? { emailMessageId: result.emailMessageId, detail: result.bounceReason }
+          : {}),
+      });
+      return;
+    }
+
+    res.json({ ok: true, emailMessageId: result.emailMessageId });
+  } catch (err) {
+    logger.error({ err, threadId }, "Reply route unhandled error");
+    res.status(500).json({ error: "internal_error" });
   }
 });
 
