@@ -83,7 +83,6 @@ afterAll(async () => {
     client.release();
   }
   await cleanTestData(PREFIX);
-  await pool.end();
 });
 
 describe("POST /api/webhooks/postmark — auth enforcement", () => {

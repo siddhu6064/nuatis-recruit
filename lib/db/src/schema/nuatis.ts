@@ -396,6 +396,34 @@ export const connectedEmailAccountsTable = pgTable(
   ],
 );
 
+/**
+ * Per-workspace email templates with merge-field placeholders.
+ * Soft-deleted via is_archived=true — row is never physically removed.
+ */
+export const emailTemplatesTable = pgTable(
+  "email_templates",
+  {
+    id: uuid("id").primaryKey().default(sql`gen_random_uuid()`),
+    workspaceId: uuid("workspace_id").references(() => workspacesTable.id).notNull(),
+    name: text("name").notNull(),
+    subject: text("subject").notNull(),
+    body: text("body").notNull(),
+    category: text("category").notNull().default("other"),
+    isArchived: boolean("is_archived").notNull().default(false),
+    createdBy: uuid("created_by").references(() => usersTable.id).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
+  },
+  (table) => [
+    check(
+      "email_templates_category_check",
+      sql`${table.category} IN ('outreach','screening','interview','offer','rejection','follow_up','other')`,
+    ),
+    index("email_templates_workspace_archived_idx").on(table.workspaceId, table.isArchived),
+    index("email_templates_workspace_category_idx").on(table.workspaceId, table.category),
+  ],
+);
+
 // ─── Inferred types ───────────────────────────────────────────────
 export type Organization = typeof organizationsTable.$inferSelect;
 export type InsertOrganization = typeof organizationsTable.$inferInsert;
@@ -432,6 +460,8 @@ export type EmailMessage = typeof emailMessagesTable.$inferSelect;
 export type InsertEmailMessage = typeof emailMessagesTable.$inferInsert;
 export type ConnectedEmailAccount = typeof connectedEmailAccountsTable.$inferSelect;
 export type InsertConnectedEmailAccount = typeof connectedEmailAccountsTable.$inferInsert;
+export type EmailTemplate = typeof emailTemplatesTable.$inferSelect;
+export type InsertEmailTemplate = typeof emailTemplatesTable.$inferInsert;
 
 // Stage definition shape stored in jobs.stages_json
 export type StageDefinition = { key: string; label: string; order: number };

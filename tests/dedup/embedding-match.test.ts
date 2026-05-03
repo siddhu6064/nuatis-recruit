@@ -44,7 +44,6 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await cleanTestData(PREFIX);
-  await pool.end();
 });
 
 describe("Embedding dedup", () => {

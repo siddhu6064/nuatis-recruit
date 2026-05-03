@@ -17,6 +17,7 @@ import Candidates from "@/pages/candidates";
 import CandidateDetail from "@/pages/candidate-detail";
 import Search from "@/pages/search";
 import Tasks from "@/pages/tasks";
+import SettingsEmailTemplates from "@/pages/settings-email-templates";
 
 const queryClient = new QueryClient();
 
@@ -59,6 +60,7 @@ function Router() {
       <Route path="/tasks" component={Tasks} />
       <Route path="/settings/members" component={SettingsMembers} />
       <Route path="/settings/email" component={SettingsEmail} />
+      <Route path="/settings/email-templates" component={SettingsEmailTemplates} />
       <Route path="/accept-invite" component={AcceptInvite} />
       <Route component={NotFound} />
     </Switch>

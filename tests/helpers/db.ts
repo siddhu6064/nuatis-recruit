@@ -66,6 +66,8 @@ export async function cleanTestData(prefix: string) {
     );
     const wsIds = wsResult.rows.map((r: { id: string }) => r.id);
     if (wsIds.length) {
+      // Batch 6A.5: email_templates
+      await client.query(`DELETE FROM email_templates          WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);
       // Batch 6A: email tables (email_messages FK on email_threads, both FK on workspace)
       await client.query(`DELETE FROM email_messages           WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);
       await client.query(`DELETE FROM email_threads            WHERE workspace_id = ANY($1::uuid[])`, [wsIds]);

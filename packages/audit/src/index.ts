@@ -43,7 +43,10 @@ export type AuditAction =
   | "email.sent"
   | "email.bounced"
   | "email_account.connected"
-  | "email_account.revoked";
+  | "email_account.revoked"
+  | "template.created"
+  | "template.updated"
+  | "template.archived";
 
 export type AuditParams = {
   workspaceId: string;

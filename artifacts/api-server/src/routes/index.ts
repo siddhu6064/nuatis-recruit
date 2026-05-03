@@ -18,6 +18,7 @@ import savedSearchesRouter from "./saved-searches";
 import emailRouter from "./email";
 import emailAuthRouter from "./email-auth";
 import emailAccountsRouter from "./email-accounts";
+import emailTemplatesRouter from "./email-templates";
 import postmarkWebhookRouter from "./webhooks/postmark";
 import nylasWebhookRouter from "./webhooks/nylas";
 import { inngestHandler } from "./inngest-serve";
@@ -52,6 +53,7 @@ router.use(notificationsRouter);
 router.use(emailRouter);
 router.use(emailAuthRouter);
 router.use(emailAccountsRouter);
+router.use(emailTemplatesRouter);
 router.use(postmarkWebhookRouter);
 router.use(nylasWebhookRouter);
 

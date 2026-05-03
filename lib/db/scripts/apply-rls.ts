@@ -607,6 +607,41 @@ CREATE UNIQUE INDEX IF NOT EXISTS email_threads_nylas_thread_id_uidx
   WHERE nylas_thread_id IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS connected_email_accounts_workspace_user_email_uidx
   ON connected_email_accounts (workspace_id, user_id, email_address);
+
+-- ─────────────────────────────────────────────────
+-- Batch 6A.5: email_templates table + RLS
+-- ─────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS email_templates (
+  id           uuid        PRIMARY KEY DEFAULT gen_random_uuid(),
+  workspace_id uuid        NOT NULL REFERENCES workspaces(id),
+  name         text        NOT NULL,
+  subject      text        NOT NULL,
+  body         text        NOT NULL,
+  category     text        NOT NULL DEFAULT 'other'
+               CHECK (category IN ('outreach','screening','interview','offer','rejection','follow_up','other')),
+  is_archived  bool        NOT NULL DEFAULT false,
+  created_by   uuid        NOT NULL REFERENCES users(id),
+  created_at   timestamptz DEFAULT now(),
+  updated_at   timestamptz DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS email_templates_workspace_archived_idx
+  ON email_templates (workspace_id, is_archived);
+CREATE INDEX IF NOT EXISTS email_templates_workspace_category_idx
+  ON email_templates (workspace_id, category);
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON email_templates TO nuatis_app;
+
+ALTER TABLE email_templates ENABLE ROW LEVEL SECURITY;
+ALTER TABLE email_templates FORCE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS email_templates_workspace_isolation ON email_templates;
+CREATE POLICY email_templates_workspace_isolation ON email_templates
+  USING (
+    NULLIF(current_setting('app.current_workspace_id', true), '') IS NULL
+    OR workspace_id::text = current_setting('app.current_workspace_id', true)
+  );
 `;
 
 async function main() {
@@ -624,7 +659,8 @@ async function main() {
       'match_scores','fairness_audit_log',
       'rejection_reasons','stage_automations',
       'notes','tasks','notifications','saved_searches',
-      'email_threads','email_messages','connected_email_accounts'
+      'email_threads','email_messages','connected_email_accounts',
+      'email_templates'
     )
     ORDER BY relname
   `);
@@ -636,11 +672,12 @@ async function main() {
     WHERE table_schema = 'public'
       AND table_name IN (
         'notes','tasks','notifications','saved_searches',
-        'email_threads','email_messages','connected_email_accounts'
+        'email_threads','email_messages','connected_email_accounts',
+        'email_templates'
       )
     ORDER BY table_name
   `);
-  console.log("Batch 5+6A tables:", tables.rows.map((r) => r.table_name).join(", "));
+  console.log("Batch 5+6A+6A.5 tables:", tables.rows.map((r) => r.table_name).join(", "));
 
   const cols = await client.query(`
     SELECT table_name, column_name FROM information_schema.columns

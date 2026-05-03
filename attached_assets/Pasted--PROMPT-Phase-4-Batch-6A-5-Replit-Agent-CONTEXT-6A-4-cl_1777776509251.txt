@@ -1,0 +1,201 @@
+▶ PROMPT [Phase 4 · Batch 6A.5 · Replit Agent]
+
+CONTEXT
+6A.4 closed net-new compose. 169/169 tests passing. Phase 4 W7 email
+work is functionally complete: inbound sync, reply, compose all live.
+Recruiters can send email but they have to type every message from
+scratch. Staffing recruiters live in canned responses — outreach,
+screening intro, interview confirmation, rejection, offer, follow-up.
+This batch adds per-workspace email templates with merge-field
+interpolation at compose time.
+
+Standing instructions (May 2 ack) apply — especially #1 (no end-of-
+batch creep), #6 (lib/* + artifacts/*), #8 (RLS pattern), #9 (no new
+external deps; this batch installs ZERO new packages).
+
+GOAL
+Recruiter on /candidates/[id] clicks Compose → in the modal, a Template
+picker dropdown lists workspace templates → selecting one renders
+subject + body into the editor with {{candidate.name}}, {{job.title}},
+{{recruiter.name}} merge fields resolved against the current
+candidate's data → recruiter can edit before sending → on send, the
+hydrated text goes through the existing 6A.4 compose path unchanged.
+
+Owner role can CRUD templates in /settings/email-templates. Recruiter
+role can use templates but not edit them this batch (per-recruiter
+private templates DEFER).
+
+SCOPE — BUILD THIS
+
+1. Schema migration. New table email_templates:
+   • id uuid pk
+   • workspace_id uuid fk, RLS-scoped (nuatis_app role, NULLIF guard)
+   • name text — recruiter-facing label (e.g., "Initial outreach")
+   • subject text — may contain merge fields
+   • body text — plaintext, may contain merge fields
+   • category enum('outreach','screening','interview','offer',
+     'rejection','follow_up','other') default 'other'
+   • is_archived bool default false
+   • created_by uuid fk users
+   • created_at, updated_at timestamptz
+   Indexes: (workspace_id, is_archived), (workspace_id, category).
+   Cross-workspace RLS isolation tests: 2 (insert + read blocked
+   across workspaces).
+
+2. Merge-field engine in lib/email/merge-fields.ts. Pure function,
+   zero deps:
+     interpolate(template: string, ctx: MergeContext): string
+   Supported tokens (this batch only — explicit allowlist):
+     {{candidate.name}}, {{candidate.firstName}},
+     {{candidate.email}}, {{candidate.currentTitle}},
+     {{candidate.currentCompany}}, {{candidate.location}},
+     {{job.title}}, {{job.location}}, {{job.salaryRange}},
+     {{client.name}},
+     {{recruiter.name}}, {{recruiter.firstName}},
+     {{recruiter.email}}
+   Behavior:
+   • Token regex: /\{\{\s*([a-z]+\.[a-zA-Z]+)\s*\}\}/g
+   • Unknown token → leave the literal {{...}} in place (don't throw;
+     don't replace with empty). Surfaces author errors visibly.
+   • Missing field on a known token (e.g., candidate has no
+     currentCompany) → empty string.
+   • candidate.firstName derives from candidate.name (first
+     whitespace-split chunk); recruiter.firstName same.
+   • job.salaryRange formats as "$min – $max" if both present, "$min+"
+     if only min, blank if neither.
+   Unit tests cover: every supported token, unknown token preserved,
+   missing field empty, escaping (literal "{{" via "\{\{" → leave as
+   "{{"), idempotency (interpolating twice = same result).
+
+3. Routes (artifacts/api-server/src/routes/email-templates.ts):
+   • GET /api/email-templates — list workspace templates (RLS-scoped).
+     Filters: ?category=, ?archived=. Default excludes archived.
+   • POST /api/email-templates — Owner-only. Validates name non-empty,
+     subject non-empty, body non-empty, category in allowlist.
+     created_by = current user.
+   • PATCH /api/email-templates/:id — Owner-only. Workspace-scoped via
+     RLS. Updates updated_at.
+   • DELETE /api/email-templates/:id — Owner-only. Soft delete via
+     is_archived=true rather than row delete (preserves
+     audit trail; archived templates excluded from picker).
+   • Audit actions: template.created, template.updated,
+     template.archived. Action keys are reserved by convention only —
+     no allowlist enforcement (matches existing 6A.0 pattern).
+   • Role enforcement: reuse existing role-guard middleware. Recruiter
+     role hitting POST/PATCH/DELETE → 403.
+
+4. Compose-time hydration endpoint:
+   POST /api/email-templates/:id/render
+   Body: { candidateId: string, jobId?: string }
+   Returns: { subject: string, body: string, missingTokens: string[] }
+   Server resolves the merge context server-side from DB:
+   candidate, job (if jobId provided), client (via job.client_id if
+   applicable), recruiter (current user). Calls interpolate(). Returns
+   hydrated subject + body. missingTokens lists known tokens that
+   resolved to empty (informational; UI can show a soft warning).
+   RLS isolation: cannot render a template from another workspace,
+   cannot resolve a candidate from another workspace.
+
+5. UI — /settings/email-templates page:
+   • Owner-only route guard (recruiters get redirect or 403 page).
+   • Table: Name | Category | Last updated | Actions (Edit, Archive).
+   • "New template" button → modal with Name, Category dropdown,
+     Subject, Body fields. Help text under Body lists supported merge
+     fields as a copyable reference.
+   • Edit modal same layout, prefilled.
+   • Archive button confirms then PATCHes is_archived=true.
+   • No template preview-with-sample-data view this batch — defer.
+
+6. UI — Template picker in ComposeEmailModal (artifacts/web):
+   • New dropdown above the Subject field labeled "Use template…"
+   • Lists workspace templates grouped by category, sorted by
+     last-updated within category. Hides archived.
+   • Selecting a template calls the /render endpoint with current
+     candidateId (and jobId if the candidate detail page has one in
+     scope — the candidate-application linkage may not always exist;
+     if not, omit jobId and the template's job.* tokens render empty).
+   • Subject + body fields populate with hydrated content. Recruiter
+     can edit freely after.
+   • If missingTokens.length > 0, show a non-blocking inline notice
+     above Send: "Some fields couldn't be filled: {{...}}, {{...}}"
+   • Picker resets to "—" when modal reopens; never auto-applies a
+     template.
+   • Reply composer (the existing 6A.3 surface) does NOT get the
+     template picker this batch — keep replies as freeform. Defer.
+
+7. Tests (extend existing suites; standing instruction #1 means no
+   bonus tests beyond this list):
+   • Schema: cross-workspace RLS isolation on email_templates (2)
+   • Merge-field engine unit tests (covered in step 2; ~10 cases)
+   • Templates CRUD: list/create/update/archive happy paths (4)
+   • Templates CRUD: recruiter role gets 403 on write paths (1)
+   • Render endpoint: hydrates correctly with full context (1)
+   • Render endpoint: hydrates with partial context (no jobId) and
+     reports missingTokens (1)
+   • Render endpoint: cross-workspace template id → RLS blocked (1)
+   • Render endpoint: cross-workspace candidate id → RLS blocked (1)
+   • Compose flow E2E: select template → render → modal populates →
+     send goes through existing compose route (1)
+   Expect 169 → ~191.
+
+SCOPE — DO NOT BUILD
+
+- No per-recruiter private templates. Workspace-shared only this batch.
+- No template versioning or template history.
+- No template usage analytics ("most-used template").
+- No A/B testing of templates.
+- No AI-suggested templates, no AI-generated drafts, no LLM call of
+  any kind.
+- No template categories beyond the listed enum.
+- No rich text in templates — plaintext body only, matching the rest
+  of the email surface this phase.
+- No attachments per template.
+- No conditional logic in templates ({{#if}} blocks).
+- No template variables beyond the explicit allowlist in step 2.
+  Adding a new token requires its own batch.
+- No template marketplace, no shared-across-workspace templates.
+- No reply-template support — replies remain freeform.
+- No "save as template" button on the compose modal — Owner creates
+  in /settings/email-templates only.
+- Do NOT install any new npm package. Standing instruction #5 — the
+  merge engine is hand-rolled regex, not a templating library.
+
+TECH CONSTRAINTS
+
+- Paths: lib/email/merge-fields.ts (new), lib/email/templates.ts
+  (route helpers if needed),
+  artifacts/api-server/src/routes/email-templates.ts (new),
+  artifacts/web/src/pages/settings-email-templates.tsx (new),
+  artifacts/web/src/components/template-picker.tsx (new),
+  extend ComposeEmailModal.
+- RLS pattern: nuatis_app role, NULLIF(..., '') guard. Standing #8.
+- Auth: existing role guard. Standing #7 grep stays clean.
+- No new dependencies. Standing #5.
+- External SDK pattern (#9) doesn't apply — no external services.
+- Insert-before-call (#10) doesn't apply — no outbound until existing
+  6A.4 compose path runs, and that already follows the pattern.
+
+ACCEPTANCE
+
+- pnpm test green at ~191.
+- Typecheck clean.
+- Standing instruction grep checks pass.
+- grep '\{\{' across the codebase only hits lib/email/merge-fields.ts,
+  its tests, and the help text component listing supported tokens.
+- No new entries in package.json dependencies or devDependencies
+  beyond what was there at the start of the batch.
+
+REPORT WHAT YOU BUILT
+
+- Files touched (paths only).
+- Test count delta and which suites were extended.
+- Schema additions (table + indexes + RLS policies).
+- Confirmation: zero new npm packages installed.
+- Any deviations — flag them.
+- Open questions.
+
+HARD STOP
+
+Stop after scope. Do not propose 6A.6, 6B, or any next batch unless it
+satisfies all three conditions in standing instruction #1. Otherwise
+end with "Awaiting next prompt."

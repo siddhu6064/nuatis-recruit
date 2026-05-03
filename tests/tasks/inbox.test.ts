@@ -44,7 +44,6 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await cleanTestData(PREFIX);
-  await pool.end();
 });
 
 describe("Tasks inbox", () => {
@@ -133,6 +132,8 @@ describe("Tasks inbox", () => {
   });
 
   it("completed task appears in completed group", async () => {
+    // Small delay to let the async res.on("finish") COMMIT become visible
+    await new Promise((r) => setTimeout(r, 25));
     const r = await request(BASE).get("/api/tasks").set("Cookie", cookie);
     expect(r.status).toBe(200);
     const completed = r.body.groups.completed as { id: string }[];

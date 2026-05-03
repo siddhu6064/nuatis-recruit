@@ -141,8 +141,9 @@ router.post("/email/send-system", async (req: Request, res: Response) => {
 
 // ── POST /api/candidates/:id/email/compose ────────────────────────────────
 
-router.post("/candidates/:id/email/compose", requireAuth, async (req: Request, res: Response) => {
-  const user = req.user!;
+router.post("/candidates/:id/email/compose", async (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
   const { id: candidateId } = req.params as { id: string };
   const { to, subject, body } = req.body as {
     to?: string;
@@ -203,8 +204,9 @@ router.post("/candidates/:id/email/compose", requireAuth, async (req: Request, r
 
 // ── POST /api/email/threads/:id/reply ─────────────────────────────────────
 
-router.post("/email/threads/:id/reply", requireAuth, async (req: Request, res: Response) => {
-  const user = req.user!;
+router.post("/email/threads/:id/reply", async (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
   const { id: threadId } = req.params as { id: string };
   const { body } = req.body as { body?: string };
 
@@ -247,7 +249,9 @@ router.post("/email/threads/:id/reply", requireAuth, async (req: Request, res: R
 
 // ── GET /api/candidates/:id/email-threads ─────────────────────────────────
 
-router.get("/candidates/:id/email-threads", requireAuth, async (req: Request, res: Response) => {
+router.get("/candidates/:id/email-threads", async (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
   const { id: candidateId } = req.params as { id: string };
   const txDb = req.db ?? db;
 
@@ -275,7 +279,9 @@ router.get("/candidates/:id/email-threads", requireAuth, async (req: Request, re
 
 // ── GET /api/email/threads/:id/messages ───────────────────────────────────
 
-router.get("/email/threads/:id/messages", requireAuth, async (req: Request, res: Response) => {
+router.get("/email/threads/:id/messages", async (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
   const { id: threadId } = req.params as { id: string };
   const txDb = req.db ?? db;
 

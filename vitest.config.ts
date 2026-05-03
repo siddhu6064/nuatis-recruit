@@ -9,6 +9,7 @@ export default defineConfig({
     testTimeout: 30000,
     hookTimeout: 30000,
     singleThread: true,
+    globalTeardown: ["tests/helpers/globalTeardown.ts"],
   },
   resolve: {
     alias: {

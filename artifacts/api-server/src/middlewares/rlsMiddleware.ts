@@ -5,6 +5,10 @@
  *
  * Both GUCs are set via parameterized SET LOCAL inside BEGIN/COMMIT, so values
  * are never string-interpolated into SQL (SQL injection safe).
+ *
+ * COMMIT STRATEGY: We commit on the "finish" event (after response headers are
+ * flushed) and roll back on the "close" event (client disconnect before finish).
+ * A `done` flag ensures only one of commit/rollback fires per request.
  */
 import type { Request, Response, NextFunction } from "express";
 import { drizzle } from "drizzle-orm/node-postgres";
@@ -34,11 +38,32 @@ export async function rlsMiddleware(
   const workspaceId = req.user.workspaceId;
   const userId = req.user.id;
   const client = await pool.connect();
-  let committed = false;
+  let done = false;
+
+  const commit = async () => {
+    if (!done) {
+      done = true;
+      try {
+        await client.query("COMMIT");
+      } finally {
+        client.release();
+      }
+    }
+  };
+
+  const rollback = async () => {
+    if (!done) {
+      done = true;
+      try {
+        await client.query("ROLLBACK");
+      } finally {
+        client.release();
+      }
+    }
+  };
 
   try {
     await client.query("BEGIN");
-
     await client.query(
       "SELECT set_config('app.current_workspace_id', $1, true)",
       [workspaceId],
@@ -50,41 +75,12 @@ export async function rlsMiddleware(
 
     req.db = drizzle(client as unknown as Pool, { schema });
 
-    const commit = async () => {
-      if (!committed) {
-        committed = true;
-        try {
-          await client.query("COMMIT");
-        } finally {
-          client.release();
-        }
-      }
-    };
-
-    const rollback = async () => {
-      if (!committed) {
-        committed = true;
-        try {
-          await client.query("ROLLBACK");
-        } finally {
-          client.release();
-        }
-      }
-    };
-
     res.on("finish", () => void commit());
     res.on("close", () => void rollback());
 
     next();
   } catch (err) {
-    if (!committed) {
-      committed = true;
-      try {
-        await client.query("ROLLBACK");
-      } finally {
-        client.release();
-      }
-    }
+    await rollback();
     next(err);
   }
 }

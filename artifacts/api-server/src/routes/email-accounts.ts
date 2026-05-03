@@ -16,8 +16,9 @@ import { logger } from "../lib/logger";
 const router: IRouter = Router();
 
 // GET /api/email/accounts
-router.get("/email/accounts", requireAuth, async (req: Request, res: Response) => {
-  const user = req.user!;
+router.get("/email/accounts", async (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
   const txDb = req.db ?? db;
 
   const isOwner = user.role === "owner";
@@ -55,9 +56,9 @@ router.get("/email/accounts", requireAuth, async (req: Request, res: Response) =
 // POST /api/email/accounts/:id/disconnect
 router.post(
   "/email/accounts/:id/disconnect",
-  requireAuth,
   async (req: Request, res: Response) => {
-    const user = req.user!;
+    const user = requireAuth(req, res);
+    if (!user) return;
     const { id } = req.params as { id: string };
     const txDb = req.db ?? db;
 

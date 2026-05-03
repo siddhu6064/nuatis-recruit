@@ -34,8 +34,9 @@ function mapProvider(nylasProvider: string): "gmail" | "outlook" | "imap" {
 }
 
 // GET /api/email/auth/start
-router.get("/email/auth/start", requireAuth, async (req: Request, res: Response) => {
-  const user = req.user!;
+router.get("/email/auth/start", async (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
 
   const state = signState({
     userId: user.id,
@@ -57,8 +58,9 @@ router.get("/email/auth/start", requireAuth, async (req: Request, res: Response)
 });
 
 // GET /api/email/auth/callback
-router.get("/email/auth/callback", requireAuth, async (req: Request, res: Response) => {
-  const user = req.user!;
+router.get("/email/auth/callback", async (req: Request, res: Response) => {
+  const user = requireAuth(req, res);
+  if (!user) return;
   const { code, state: rawState, error: oauthError } = req.query as Record<string, string>;
 
   const settingsUrl =

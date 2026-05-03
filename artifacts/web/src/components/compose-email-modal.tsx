@@ -1,13 +1,14 @@
 /**
- * Compose Email modal — Batch 6A.4.
+ * Compose Email modal — Batch 6A.4 + 6A.5.
  *
- * Opens from the Compose button in the candidate header or from the
- * Communications tab empty-state CTA. Uses the existing Radix Dialog
- * (no new library installed). Plaintext body textarea — matches 6A.3's
- * ReplyComposer choice exactly.
+ * 6A.5 adds:
+ *   - TemplatePicker above the Subject field — loads workspace templates, renders
+ *     merge fields server-side, and pre-fills Subject + Body on selection.
+ *   - missingTokens callout — amber warning listing unresolved {{token}} values.
+ *   - openCount key keeps TemplatePicker remounted each time the modal opens
+ *     so the dropdown resets to "— select a template —" cleanly.
  *
- * 409 grant_missing → amber callout with /settings/email link (same
- * visual pattern as 6A.3 ReplyComposer).
+ * 409 grant_missing → amber callout with /settings/email link.
  * Generic error → message shown in-modal, draft preserved for retry.
  */
 import { useState, useEffect } from "react";
@@ -23,6 +24,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Loader2, Send, AlertCircle, X } from "lucide-react";
 import { Link } from "wouter";
+import { TemplatePicker } from "@/components/template-picker";
 
 const BASE = import.meta.env.BASE_URL.replace(/\/$/, "");
 
@@ -47,8 +49,11 @@ export function ComposeEmailModal({
   const [sending, setSending] = useState(false);
   const [grantMissing, setGrantMissing] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [missingTokens, setMissingTokens] = useState<string[]>([]);
+  // Increment each time modal opens so TemplatePicker remounts (resets dropdown).
+  const [openCount, setOpenCount] = useState(0);
 
-  // Reset form state each time the modal opens
+  // Reset form state each time the modal opens.
   useEffect(() => {
     if (open) {
       setTo(candidateEmails[0] ?? "");
@@ -57,10 +62,18 @@ export function ComposeEmailModal({
       setSending(false);
       setGrantMissing(false);
       setErrorMsg(null);
+      setMissingTokens([]);
+      setOpenCount((c) => c + 1);
     }
   }, [open, candidateEmails]);
 
   const canSend = Boolean(to.trim() && subject.trim() && body.trim() && !sending);
+
+  function handleTemplateApply(s: string, b: string, tokens: string[]) {
+    setSubject(s);
+    setBody(b);
+    setMissingTokens(tokens);
+  }
 
   async function handleSend() {
     if (!canSend) return;
@@ -108,6 +121,14 @@ export function ComposeEmailModal({
         </DialogHeader>
 
         <div className="space-y-4 py-1">
+          {/* Template picker — remounts on each open so it resets cleanly */}
+          <TemplatePicker
+            key={openCount}
+            candidateId={candidateId}
+            onApply={handleTemplateApply}
+            disabled={sending}
+          />
+
           {/* To */}
           <div className="space-y-1.5">
             <Label htmlFor="compose-to">To</Label>
@@ -153,7 +174,7 @@ export function ComposeEmailModal({
             />
           </div>
 
-          {/* Body — plaintext textarea, same as ReplyComposer in 6A.3 */}
+          {/* Body */}
           <div className="space-y-1.5">
             <Label htmlFor="compose-body">Message</Label>
             <textarea
@@ -171,7 +192,25 @@ export function ComposeEmailModal({
             />
           </div>
 
-          {/* Grant missing callout — same amber pattern as 6A.3 ReplyComposer */}
+          {/* Missing tokens warning */}
+          {missingTokens.length > 0 && (
+            <div className="border rounded-lg p-4 bg-amber-50 dark:bg-amber-950/30 text-sm flex items-start gap-3">
+              <AlertCircle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <p className="font-medium text-amber-800 dark:text-amber-200">
+                  Some merge fields could not be filled
+                </p>
+                <p className="text-amber-700 dark:text-amber-300 mt-0.5 text-xs break-all">
+                  {missingTokens.join(", ")}
+                </p>
+              </div>
+              <button onClick={() => setMissingTokens([])}>
+                <X className="h-4 w-4 text-amber-500 hover:opacity-70" />
+              </button>
+            </div>
+          )}
+
+          {/* Grant missing callout */}
           {grantMissing && (
             <div className="border rounded-lg p-4 bg-amber-50 dark:bg-amber-950/30 text-sm flex items-start gap-3">
               <AlertCircle className="h-4 w-4 text-amber-500 shrink-0 mt-0.5" />
