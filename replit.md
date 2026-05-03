@@ -178,40 +178,66 @@ AI service (`artifacts/ai-server`) runs Python/FastAPI at port 9000 (`/ai` path)
 
 ### Outbound Reply (Batch 6A.3)
 
-- **`nylas.ts`**: `sendMessage(grantId, { to, subject, body, replyToMessageId })` added to `NylasClientInterface` and real client. Calls `nylas.messages.send({ identifier, requestBody: { to, subject, body, replyToMessageId, isPlaintext: true } })`. Returns `{ nylasMessageId, sentAt }`. Same test hook pattern.
-- **`send-reply.ts`** (`lib/email/send-reply.ts`): Extracted core reply logic (callable directly by tests — same pattern as `ingest-nylas-message.ts`).
-  - `computeReplySubject(s)` — strips all leading `Re:/RE:/re:` prefixes (case-insensitive) and prepends exactly one `"Re: "`.
+- **`nylas.ts`**: `sendMessage(grantId, { to, subject, body, replyToMessageId })` added to `NylasClientInterface` and real client. Returns `{ nylasMessageId, sentAt, nylasThreadId? }`. Same test hook pattern.
+- **`send-reply.ts`** (`lib/email/send-reply.ts`): Extracted core reply logic (callable directly by tests).
+  - `computeReplySubject(s)` — strips all leading `Re:/RE:/re:` prefixes and prepends exactly one `"Re: "`.
   - `sendReplyFn({ threadId, workspaceId, userId, body })` → `SendReplyResult` discriminated union.
-  - Flow: lookup thread → find most recent inbound → resolve sender's active grant → INSERT `email_messages` (status=`'queued'`) + UPDATE `email_threads` in a single DB transaction → call `sendMessage` → UPDATE to `'sent'` (success) or `'failed'` + `bounce_reason` (error) → audit log + activity row.
-- **`POST /api/email/threads/:id/reply`** — thin HTTP wrapper in `email.ts`. Returns 404/409/422/500 per discriminated result code. 409 carries `code: "grant_missing"` for the UI CTA.
-- **`CommunicationsTab`** — `ThreadDetail` now has a Reply button that opens an inline plain-`<textarea>` composer (no new deps; Tiptap intentionally NOT used here). Cancel and Send buttons; `⌘↵` shortcut. 409 grant-missing renders amber callout with `/settings/email` link. Outbound `MessageBubble` status indicators: `'queued'` → Clock icon, `'failed'` → AlertCircle + Retry button (re-POSTs with `message.bodyText`), `'sent'` → no indicator (clean).
+  - Flow: lookup thread → find most recent inbound → resolve sender's active grant → INSERT `email_messages` (status=`'queued'`) + UPDATE `email_threads` → call `sendMessage` → UPDATE to `'sent'` or `'failed'` → audit log + activity row.
+- **`POST /api/email/threads/:id/reply`** — thin HTTP wrapper. Returns 404/409/422/500 per result code.
+- **`CommunicationsTab`** — inline `<textarea>` composer, Cancel/Send, `⌘↵` shortcut. 409 grant-missing renders amber callout. Outbound `MessageBubble` status indicators: queued → Clock, failed → AlertCircle + Retry, sent → clean.
 
-### Test Suite (161/161 passing — 25 test files)
+### Compose Net-New Email (Batch 6A.4)
 
-- `tests/security/rls.test.ts` — 20 RLS isolation tests (all tables including email tables)
+- **`nylas.ts`**: `NylasSendResult` extended with `nylasThreadId?: string`; real client extracts `data.threadId ?? data.thread_id` from Nylas response.
+- **`compose-email.ts`** (`lib/email/compose-email.ts`): Standalone `composeEmailFn` + `validateComposeParams`.
+  - Validates `to` (email), `subject` (non-empty), `body` (non-empty).
+  - Flow: resolve active grant → INSERT `email_threads` (new row, no existing thread) + INSERT `email_messages` (status=`'queued'`) → call `sendMessage` → UPDATE thread `nylas_thread_id` + message `status='sent'` → audit log `mode:'compose'` → activity row.
+  - `diff_json` stored as JSONB (pg driver returns already-parsed object in tests — no `JSON.parse()` needed).
+- **`POST /api/candidates/:id/email/compose`** — returns 201 on success; 400 (validation), 404 (candidate not found), 409 (grant_missing), 500.
+- **`ComposeEmailModal`** (`compose-email-modal.tsx`) — Radix Dialog with To/Subject/Body fields, email address picker from `candidate.emails`, loading/error states.
+- **`candidate-detail.tsx`** updates:
+  - "Compose Email" button in candidate header (gated on `emailV1Enabled && emails.length > 0`).
+  - `composeOpen` state + `useQueryClient` to invalidate `['email-threads', candidateId]` on success.
+  - **Communications tab trigger added** to `TabsList` (was missing — `<TabsTrigger value="communications">` now present alongside Profile/Applications/Notes/Tasks/Activity/Documents).
+
+### Search, Notes, Tasks, Dedup (Batch 5 — COMPLETE)
+
+- **Schema** (all live): `notes`, `tasks`, `notifications`, `saved_searches`; `candidates.search_vector` tsvector GENERATED col with GIN index; `rlsMiddleware` sets both `app.current_workspace_id` and `app.current_user_id` via SET LOCAL.
+- **Hybrid search** (`search.ts`): FTS via `plainto_tsquery` + semantic via pgvector HNSW cosine; combined score 0.6 × norm_fts + 0.4 × norm_cos; cursor pagination (25 per page); in-memory embed cache (1 h TTL). Graceful fallback when AI server unavailable.
+- **Notes + @mentions** (`notes.ts`): Tiptap JSON stored as text in `body_html`; `extractMentionedUserIds` + `extractPlainText` server-side. Notifications inserted per mentioned user; Inngest `email.mention` event fired. Author-only edit/delete enforced.
+- **Tasks inbox** (`tasks.ts`): Grouped as overdue / today / this_week / later / completed. `GET /api/tasks/overdue-count` for nav badge. Candidate-linked tasks via `GET /api/candidates/:id/tasks`.
+- **Notifications** (`notifications.ts`): `GET /api/notifications` (with `unreadCount`), `POST /api/notifications/mark-read`.
+- **Saved searches** (`saved-searches.ts`): owner-scoped CRUD with `query_json`.
+- **Dedup** (`candidates.ts`): POST returns 409 with `duplicates[]` on email or phone match (normalized). `force=true` bypasses. `POST /api/candidates/:sourceId/merge-into/:targetId` — merges applications (dedupes by job), notes, tasks; deletes source; writes `candidate.merged` audit + activity.
+- **Frontend**: `/search` page, `/tasks` page, `NotesTab` (Tiptap read-only renderer + plain `<textarea>` create), `TasksTab`, `NotificationBell` in Nav.
+
+### Test Suite (169/169 passing — 26 test files)
+
+- `tests/security/rls.test.ts` — 20 RLS isolation tests
 - `tests/audit/audit-log.test.ts` — 4 trigger audit tests
 - `tests/invite/invite-flow.test.ts` — 4 invite flow tests
 - `tests/public-apply/apply-flow.test.ts` — 3 public apply DB assertion tests
 - `tests/ai-pipeline/parse-stub.test.ts` — 5 AI service parse/embed tests
 - `tests/ai-pipeline/match-flow.test.ts` — 5 match pipeline + DB integration tests
-- `tests/e2e/demo-loop.test.ts` — 5 E2E tests (apply → Inngest → match_scores within 30 s)
+- `tests/e2e/demo-loop.test.ts` — 5 E2E tests (apply → Inngest → match_scores)
 - `tests/kanban/stage-transitions.test.ts` — 8 stage move tests
 - `tests/kanban/bulk-operations.test.ts` — 9 bulk move/reject tests
 - `tests/kanban/rejection-reasons.test.ts` — 6 rejection reasons tests
 - `tests/realtime/sse-stage-updates.test.ts` — 3 SSE tests
-- `tests/search/hybrid-search.test.ts` — 7 search tests
-- `tests/search/perf.test.ts` — 1 P50 latency test
-- `tests/notes/mentions.test.ts` — 9 notes + @mention tests
-- `tests/tasks/inbox.test.ts` — 12 task inbox tests
-- `tests/dedup/email-match.test.ts` — 5 email dedup tests
-- `tests/dedup/phone-match.test.ts` — 5 phone dedup tests
-- `tests/dedup/embedding-match.test.ts` — 3 embedding dedup tests
-- `tests/dedup/merge.test.ts` — 10 candidate merge tests
+- `tests/search/hybrid-search.test.ts` — 7 FTS + pagination + workspace isolation tests
+- `tests/search/perf.test.ts` — 1 P50 < 200 ms latency test
+- `tests/notes/mentions.test.ts` — 8 notes CRUD + @mention notification tests
+- `tests/tasks/inbox.test.ts` — 13 task lifecycle + inbox grouping tests
+- `tests/dedup/email-match.test.ts` — 5 email dedup tests (case-insensitive, force, isolation)
+- `tests/dedup/phone-match.test.ts` — 4 phone dedup tests (normalization, force)
+- `tests/dedup/embedding-match.test.ts` — 3 embedding dedup tests (pgvector available check)
+- `tests/dedup/merge.test.ts` — 10 candidate merge tests (applications, notes, tasks, audit)
 - `tests/email/postmark-send.test.ts` — 3 Postmark wrapper unit tests
-- `tests/email/webhook.test.ts` — 4 Postmark webhook tests (2 auth enforcement + 2 bounce handling)
+- `tests/email/webhook.test.ts` — 4 Postmark webhook tests
 - `tests/email/nylas-wrapper.test.ts` — 7 Nylas wrapper + state-token unit tests
 - `tests/email/nylas-webhook.test.ts` — 5 HMAC webhook validation tests
-- `tests/email/nylas-ingest.test.ts` — 5 ingest logic tests (happy path, candidate match, idempotency, outbound skip, RLS)
-- `tests/email/nylas-reply.test.ts` — 11 reply tests (sendMessage wrapper args + replyToMessageId, computeReplySubject × 4 de-dup cases, happy path row/thread/audit, grant_missing, send_failed queued-row pattern, cross-workspace isolation, no_inbound_message)
+- `tests/email/nylas-ingest.test.ts` — 5 ingest logic tests
+- `tests/email/nylas-reply.test.ts` — 11 reply tests
+- `tests/email/nylas-compose.test.ts` — 8 compose tests (happy path, audit jsonb, grant_missing, isolation, send_failed, audit suppressed, validateComposeParams × 2)
 
 See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.

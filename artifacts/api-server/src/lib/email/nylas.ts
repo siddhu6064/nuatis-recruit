@@ -48,6 +48,8 @@ export type NylasSendParams = {
 export type NylasSendResult = {
   nylasMessageId: string;
   sentAt: Date;
+  /** Nylas thread ID assigned to this message — present on new sends, may be absent on replies. */
+  nylasThreadId?: string;
 };
 
 export type NylasClientInterface = {
@@ -154,10 +156,15 @@ function makeRealClient(): NylasClientInterface {
           isPlaintext: true,
         },
       });
+      // Nylas v8 SDK: response.data is a Message (extends BaseMessage).
+      // BaseMessage.threadId?: string — the thread this message belongs to.
+      // For new sends (compose), Nylas creates a fresh thread and returns its ID here.
+      // For replies, Nylas may return the existing thread ID or omit it.
       const data = response.data as unknown as Record<string, unknown>;
       return {
         nylasMessageId: data.id as string,
         sentAt: data.date ? new Date((data.date as number) * 1000) : new Date(),
+        nylasThreadId: (data.threadId ?? data.thread_id) as string | undefined,
       };
     },
   };

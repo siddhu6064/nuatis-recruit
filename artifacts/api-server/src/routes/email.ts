@@ -15,6 +15,7 @@ import { requireAuth } from "@workspace/auth";
 import { sendTransactional } from "../lib/email/postmark";
 import { renderMentionEmail } from "../lib/email/templates/mention";
 import { sendReplyFn } from "../lib/email/send-reply";
+import { composeEmailFn, validateComposeParams } from "../lib/email/compose-email";
 import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
@@ -135,6 +136,68 @@ router.post("/email/send-system", async (req: Request, res: Response) => {
   } catch (err) {
     logger.error({ err }, "Failed to send system email");
     res.status(500).json({ error: String(err) });
+  }
+});
+
+// ── POST /api/candidates/:id/email/compose ────────────────────────────────
+
+router.post("/candidates/:id/email/compose", requireAuth, async (req: Request, res: Response) => {
+  const user = req.user!;
+  const { id: candidateId } = req.params as { id: string };
+  const { to, subject, body } = req.body as {
+    to?: string;
+    subject?: string;
+    body?: string;
+  };
+
+  const validationErr = validateComposeParams({
+    to: to ?? "",
+    subject: subject ?? "",
+    body: body ?? "",
+  });
+  if (validationErr) {
+    res.status(400).json({ error: validationErr.message, field: validationErr.field });
+    return;
+  }
+
+  try {
+    const result = await composeEmailFn({
+      candidateId,
+      workspaceId: user.workspaceId,
+      userId: user.id,
+      to: to!.trim(),
+      subject: subject!.trim(),
+      body: body!.trim(),
+    });
+
+    if (!result.ok) {
+      const statusCode =
+        result.code === "candidate_not_found" ? 404
+        : result.code === "grant_missing" ? 409
+        : 500;
+
+      res.status(statusCode).json({
+        error: result.code,
+        code: result.code,
+        ...(result.code === "send_failed"
+          ? {
+              emailMessageId: result.emailMessageId,
+              threadId: result.threadId,
+              detail: result.bounceReason,
+            }
+          : {}),
+      });
+      return;
+    }
+
+    res.status(201).json({
+      ok: true,
+      emailMessageId: result.emailMessageId,
+      threadId: result.threadId,
+    });
+  } catch (err) {
+    logger.error({ err, candidateId }, "Compose route unhandled error");
+    res.status(500).json({ error: "internal_error" });
   }
 });
 

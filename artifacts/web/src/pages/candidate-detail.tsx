@@ -1,17 +1,19 @@
 import { useAuth } from "@workspace/replit-auth-web";
-import { useQuery } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import { Link, useParams } from "wouter";
 import { Nav } from "@/components/nav";
 import { CommunicationsTab } from "@/components/communications-tab";
+import { ComposeEmailModal } from "@/components/compose-email-modal";
 import { NotesTab } from "@/components/notes-tab";
 import { TasksTab } from "@/components/tasks-tab";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
-import { ArrowLeft, Mail, Phone, MapPin } from "lucide-react";
+import { ArrowLeft, Mail, Phone, MapPin, PenSquare } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 
 type Candidate = {
@@ -217,6 +219,10 @@ export default function CandidateDetail() {
     refetchInterval: 3000,
   });
 
+  const queryClient = useQueryClient();
+  const [composeOpen, setComposeOpen] = useState(false);
+  const emailV1Enabled = workspaceData?.emailV1Enabled ?? false;
+
   if (isLoading) return <div className="min-h-screen flex items-center justify-center"><div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" /></div>;
 
   return (
@@ -236,6 +242,17 @@ export default function CandidateDetail() {
                 <h1 className="text-2xl font-semibold">{candidate.name}</h1>
                 {candidate.doNotContact && (
                   <Badge variant="destructive" className="text-xs">Do Not Contact</Badge>
+                )}
+                {emailV1Enabled && candidate.emails?.length > 0 && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="ml-auto"
+                    onClick={() => setComposeOpen(true)}
+                  >
+                    <PenSquare className="h-4 w-4 mr-1.5" />
+                    Compose Email
+                  </Button>
                 )}
               </div>
               {(candidate.currentTitle || candidate.currentCompany) && (
@@ -258,10 +275,23 @@ export default function CandidateDetail() {
               </div>
             </div>
 
+            {emailV1Enabled && candidate.emails?.length > 0 && (
+              <ComposeEmailModal
+                open={composeOpen}
+                onClose={() => setComposeOpen(false)}
+                candidateId={candidate.id}
+                candidateEmails={candidate.emails}
+                onSuccess={() => {
+                  void queryClient.invalidateQueries({ queryKey: ["email-threads", candidate.id] });
+                }}
+              />
+            )}
+
             <Tabs defaultValue="profile">
               <TabsList>
                 <TabsTrigger value="profile">Profile</TabsTrigger>
                 <TabsTrigger value="applications">Applications</TabsTrigger>
+                <TabsTrigger value="communications">Communications</TabsTrigger>
                 <TabsTrigger value="notes">Notes</TabsTrigger>
                 <TabsTrigger value="tasks">Tasks</TabsTrigger>
                 <TabsTrigger value="activity">Activity</TabsTrigger>

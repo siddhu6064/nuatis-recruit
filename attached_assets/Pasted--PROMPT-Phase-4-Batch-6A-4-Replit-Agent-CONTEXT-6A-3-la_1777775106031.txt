@@ -1,0 +1,167 @@
+▶ PROMPT [Phase 4 · Batch 6A.4 · Replit Agent]
+
+CONTEXT
+6A.3 landed reply-to-thread outbound through user's Nylas grant. 161/161
+tests passing. This batch adds NET-NEW COMPOSE — recruiter on a candidate
+detail page clicks Compose, types subject + plaintext body, sends. Creates
+a brand-new email_threads row (no prior inbound exists), inserts the
+outbound email_messages row, sends through the user's grant.
+
+Templates, merge fields, tracking pixels, schedule-send, attachments,
+sequences/campaigns — all DEFER. This batch is just the compose surface
+plus the route plus thread creation.
+
+Project structure: lib/* and artifacts/*. Nylas wrapper, sendMessage, the
+queued-row-then-external-call pattern, and reply UI all exist from 6A.2 +
+6A.3 — extend, don't rebuild.
+
+GOAL
+Recruiter on /candidates/[id] clicks Compose Email → modal opens with
+To (prefilled to candidate.emails[0]), Subject, plaintext Body → clicks
+Send → email_threads row created with candidate_id, email_messages row
+inserted direction='outbound' status='queued' → Nylas send → status='sent'
+with nylas_message_id and nylas_thread_id populated → modal closes →
+Communications tab refreshes and the new thread appears top of the list.
+
+SCOPE — BUILD THIS
+
+1. POST /api/candidates/:id/email/compose route. Body: { to: string,
+   subject: string, body: string }. Server-side flow:
+   • Auth; resolve current user.
+   • Load candidate by id; verify workspace via RLS.
+   • Validate: to is a valid email; subject and body non-empty (trim
+     first); to address belongs to candidate.emails[] OR is in
+     workspace's allowed-domain list (skip the domain-list check this
+     batch — for now, allow ANY `to` so a recruiter can mail an
+     alternate address the candidate provided. Track as a future
+     guardrail).
+   • Resolve sending grant: connected_email_accounts where user_id=
+     current user, status='active'. If none, return 409 with code
+     grant_missing. Reuse the existing 409 contract from 6A.3 so the UI
+     callout is consistent.
+   • Within one transaction: INSERT email_threads (workspace_id,
+     candidate_id, subject, last_message_at=now, message_count=0,
+     nylas_thread_id=null — populated post-send). Capture thread id.
+     INSERT email_messages with thread_id, direction='outbound',
+     status='queued', from_address=grant.email_address, to_addresses=
+     [to], subject, body_text=body, in_reply_to=null. Capture message
+     row id.
+   • Call nylas.sendMessage(grantId, { to:[{email:to}], subject, body,
+     replyToMessageId:undefined }). Verify the v8 SDK signature
+     accepts a non-reply send — if `replyToMessageId` is required as
+     a key, pass `undefined` explicitly per SDK docs.
+   • On success: UPDATE email_messages SET status='sent', nylas_
+     message_id, sent_at, AND UPDATE email_threads SET nylas_thread_id
+     (Nylas returns it on send), message_count=1.
+   • On failure: UPDATE email_messages SET status='failed',
+     bounce_reason. Leave thread row in place — UI will show the
+     failed bubble in the new thread. User can Retry via the same
+     mechanism 6A.3 built.
+   • Audit: action='email.sent' with metadata { threadId, grantId,
+     messageId, mode:'compose' } — distinguish from reply audits.
+   • Activity log on candidate: type='email_sent', payload={ subject,
+     fromUser, messageId, mode:'compose' }.
+
+2. Compose modal UI. Trigger: Compose button somewhere obvious on
+   /candidates/[id] header, plus an empty-state CTA on the
+   Communications tab when there are zero threads. Modal contents:
+   • To field — prefilled with candidate.emails[0], editable, dropdown
+     selector if candidate has multiple emails.
+   • Subject — single-line text input, required.
+   • Body — same plaintext input the reply composer uses (textarea or
+     existing Tiptap stripped to plaintext-only mode — match 6A.3's
+     choice exactly, do NOT diverge).
+   • Send and Cancel buttons. Send disabled until To valid, Subject
+     non-empty, Body non-empty.
+   • While sending: button spinner + disabled.
+   • On success: close modal, fire Communications tab refetch.
+   • On 409 grant_missing: inline callout "Connect your inbox to send
+     email" linking to /settings/email — reuse the same component
+     from 6A.3 verbatim.
+   • On failure: keep modal open, show error toast, leave the user's
+     draft intact so they can Retry. The failed-status row in the
+     thread is the persistence; modal Retry just re-POSTs.
+
+3. CC and BCC — explicitly NOT this batch. The schema supports them
+   (cc_addresses, bcc_addresses arrays exist on email_messages from
+   6A.0). UI hides them. Track as known gap.
+
+4. Tests (extend existing suites — match 6A.3's test layout):
+   • compose route happy path: thread + message rows written, status
+     transitions queued → sent, nylas_thread_id populated post-send
+   • 409 grant_missing path
+   • Cross-workspace candidate id rejected by RLS
+   • Nylas send fails: thread persists, message status='failed',
+     bounce_reason populated, audit NOT written
+   • Validation: empty subject, empty body, malformed to → 400
+   • Test the queued-row-before-call invariant: simulate an exception
+     in nylas.sendMessage AFTER the row insert; confirm the row is
+     still queryable as 'failed' rather than missing
+   • Reuse computeReplySubject? No — compose subject is user-typed
+     verbatim, no Re: handling
+   Expect 161 → ~169.
+
+SCOPE — DO NOT BUILD
+
+- No templates, no template library, no template variables/merge
+  fields, no per-workspace template storage. 6A.5.
+- No CC, no BCC, no reply-all-style fan-out.
+- No tracking pixels, no link rewriting, no open/click tracking.
+- No schedule-send, no send-later, no time-zone delay, no Inngest
+  delayed dispatch. 6A.6 if it lands at all this phase.
+- No attachments — uploads, inline images, drag-drop. 6A.7 maybe;
+  more likely Phase 5 polish.
+- No address-book autocomplete (typing 'jo' showing matching contacts).
+- No thread merging across multiple recipient addresses.
+- No sequences, multi-step campaigns, or drip cadences.
+- No allow-list / deny-list of outbound recipients. Track as guardrail
+  for Phase 6 hardening.
+- No re-auth banner for expired grants — still deferred from 6A.2.
+- Do NOT change anything in lib/email/nylas.ts beyond what 6A.3
+  established. If sendMessage already supports an optional
+  replyToMessageId, that's all you need. If it requires the param,
+  pass undefined explicitly.
+
+TECH CONSTRAINTS
+
+- Reuse Nylas wrapper, send-reply.ts pattern, queued-row invariant.
+  Do not duplicate the wrapper.
+- Modal: reuse existing modal/dialog component from the codebase. Do
+  not install a new dialog library.
+- Plaintext only this batch. Match 6A.3's editor choice exactly.
+- Atomic-tx invariant: thread insert and queued-message insert in one
+  transaction. Status transitions after the Nylas call do NOT need to
+  be in the same tx as the inserts.
+- Idempotency: not strictly required — user-initiated send isn't
+  retried by external systems — but the queued-row pattern protects
+  against partial-failure inconsistency.
+- RLS unchanged. Replit Auth abstraction stays clean — grep for
+  @replit/(repl-auth|auth)|passport-replit outside lib/auth/ stays
+  empty.
+- ML-engineering territory: nothing here is ML.
+
+ACCEPTANCE
+
+- pnpm test green at ~169.
+- Typecheck clean.
+- grep '@nylas' only hits lib/email/nylas.ts and the Inngest handler.
+- grep '@replit/repl-auth\\|@replit/auth\\|passport-replit' outside
+  lib/auth/ returns zero.
+- Smoke deferred to end of phase — DO NOT manually smoke this batch.
+
+REPORT WHAT YOU BUILT
+
+- Files touched (paths only).
+- Test count delta.
+- Schema additions if any (ideally none).
+- How nylas_thread_id is captured from a non-reply send — cite the
+  Nylas v8 SDK response shape you read it from.
+- Compose-vs-reply distinction in audit log metadata.
+- Any deviations — flag them.
+- Open questions.
+
+HARD STOP
+
+Stop after scope. Do not start templates, tracking, scheduling,
+attachments. Do not propose 6A.5 or 6B. Do not offer "also wire X."
+Wait for next prompt.
