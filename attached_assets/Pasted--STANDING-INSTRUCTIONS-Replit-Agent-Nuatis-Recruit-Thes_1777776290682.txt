@@ -1,0 +1,91 @@
+▶ STANDING INSTRUCTIONS [Replit Agent · Nuatis Recruit]
+
+These rules apply to every batch you work on for this project, in
+addition to whatever the per-batch CONTEXT/GOAL/SCOPE prompt says.
+
+1. END-OF-BATCH PROPOSALS — be more conservative.
+
+   When you finish a batch and write the report, you MAY suggest a next
+   batch ONLY if it satisfies ALL of:
+     a. It's the literal next item in the same Phase / Week of the build
+        checklist (Doc 08), OR it's a continuation of the current batch
+        that was explicitly carved off as "deferred to next batch" in
+        the prompt's SCOPE — DO NOT BUILD list.
+     b. It is not a feature that already exists in the codebase. Before
+        offering, grep the repo for the feature name and verify it
+        isn't already shipped.
+     c. It does not require external vendor accounts or secrets that
+        haven't been provisioned yet.
+
+   If it doesn't satisfy all three, do NOT propose it. Just end the
+   report with "Awaiting next prompt."
+
+2. NO RE-VERIFICATION OF COMPLETED WORK.
+
+   Don't sweep through prior batches' code to "double-check" or "update
+   project memory." The human's tracker is the source of truth on what's
+   done. If you notice something that looks broken in prior work,
+   mention it in the open-questions section of your report — don't fix
+   it without being asked.
+
+3. NO SCOPE EXPANSION DURING A BATCH.
+
+   The prompt's SCOPE — BUILD THIS list is exhaustive. If during the
+   batch you think "I should also add X to make this work," stop and
+   put X in open questions instead. Never add unprompted scope.
+   Especially never add: tracking pixels, analytics events, feature
+   flags not in the prompt, telemetry, "while I'm here" refactors,
+   dependency upgrades, extra tests beyond the listed cases.
+
+4. NO ML-QUALITY WORK.
+
+   Resume parser prompts, JD parser prompts, match-score rationales,
+   bias-audit logic, integrity/Trust Score signal weights, eval cases
+   beyond skeleton structure — these belong to a human ML engineer.
+   Stub them with `// TODO: human ML engineer owns this prompt/logic`
+   and a clear interface. Don't write production prompts.
+
+5. NO VENDOR LOCK-IN WITHOUT CHECKING.
+
+   If a prompt would lead you to install a new external dependency
+   (npm package, vendor SDK, hosted service), confirm it's listed in
+   the prompt's TECH CONSTRAINTS first. If not listed, flag it in open
+   questions before installing.
+
+6. PROJECT STRUCTURE IS lib/* AND artifacts/*.
+
+   Not packages/* and apps/*. The PRD's monorepo description is stale.
+   Match the actual repo layout.
+
+7. AUTH ABSTRACTION IS LOAD-BEARING.
+
+   No imports of @replit/repl-auth, @replit/auth, or passport-replit
+   anywhere outside lib/auth/. This is a hard rule — every batch's
+   acceptance criteria includes a grep for these strings outside
+   lib/auth/, and a hit fails the batch.
+
+8. RLS PATTERN IS LOAD-BEARING.
+
+   Every tenant-scoped table uses Postgres role nuatis_app + SET LOCAL
+   app.current_workspace_id with NULLIF(..., '') guard in policies.
+   Don't "simplify" this. Cross-workspace isolation tests are required
+   for every new tenant-scoped table.
+
+9. EXTERNAL-SDK WRAPPER PATTERN.
+
+   Every external SDK (Postmark, Nylas, future Twilio/Deepgram/Vapi/
+   Recall.ai) lives behind a thin wrapper in lib/* with a module-level
+   test-hook setter (e.g., _setTestSendEmail, _setTestNylasClient).
+   No vi.mock() of vendor packages — the test hook pattern is the
+   standard.
+
+10. INSERT-BEFORE-CALL FOR OUTBOUND.
+
+    Any user-initiated send to an external system (email, SMS, call,
+    webhook) inserts a 'queued' DB row BEFORE the external call, then
+    transitions to 'sent' or 'failed' on settle. Never call external
+    then write — you'll lose state on failure.
+
+Confirm you've read these by replying with "Standing instructions
+acknowledged" and the date, and apply them starting from the next batch
+prompt.
